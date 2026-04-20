@@ -12,7 +12,7 @@ that is reloaded into context on the next `SessionStart`.
 ## Commands
 
 ```bash
-npm test                        # vitest — 118 tests in tests/helpers/ + tests/entrypoints/
+npm test                        # vitest — 171 tests in tests/helpers/ + tests/entrypoints/
 npm test -- tests/helpers/jsonl # run one file
 npm run typecheck               # tsc --noEmit
 npm run lint                    # biome check (also enforces 4-space indent)
