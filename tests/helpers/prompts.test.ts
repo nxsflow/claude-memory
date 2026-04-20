@@ -91,4 +91,23 @@ describe("renderPrompt", () => {
     it("ignores extra keys in vars", () => {
         expect(renderPrompt("{{A}}", { A: "x", B: "y" })).toBe("x");
     });
+
+    it("does not treat placeholder-shaped text in a substituted value as missing", () => {
+        // Regression: prior impl re-scanned the rendered output, so a user
+        // conversation extract mentioning `{{EPISODES}}` (e.g. discussing a
+        // spec) was mis-reported as an unsubstituted template placeholder.
+        const template = "Extract:\n{{EXTRACT}}\n";
+        const extract = "We are adding {{EPISODES}} and {{SUBJECT_GLOSSARY}}.";
+        expect(renderPrompt(template, { EXTRACT: extract })).toBe(
+            `Extract:\n${extract}\n`,
+        );
+    });
+
+    it("reports only keys missing from vars, not keys that appear inside substituted values", () => {
+        const template = "{{A}} {{B}}";
+        // A is provided (its value contains a {{C}} literal); B is NOT provided
+        expect(() => renderPrompt(template, { A: "hello {{C}}" })).toThrow(
+            /\bB\b/,
+        );
+    });
 });

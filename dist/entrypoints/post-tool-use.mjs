@@ -7,6 +7,7 @@ import {
   readdirSync as readdirSync3,
   readFileSync as readFileSync3,
   statSync as statSync2,
+  unlinkSync as unlinkSync2,
   writeFileSync as writeFileSync2
 } from "node:fs";
 import path5 from "node:path";
@@ -260,6 +261,18 @@ async function main() {
   const logDir = path5.join(dataDir, "logs", "autonomous");
   try {
     mkdirSync3(logDir, { recursive: true });
+  } catch {
+  }
+  try {
+    const sweepCutoff = Date.now() - 5e3;
+    for (const name of readdirSync3(logDir)) {
+      if (!name.endsWith(".log")) continue;
+      const p = path5.join(logDir, name);
+      const st = statSync2(p);
+      if (st.size === 0 && st.mtimeMs < sweepCutoff) {
+        unlinkSync2(p);
+      }
+    }
   } catch {
   }
   const logPath = path5.join(logDir, `save-${hh}${mm}${ss}.log`);
