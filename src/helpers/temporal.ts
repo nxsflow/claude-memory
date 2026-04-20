@@ -201,6 +201,94 @@ function daysBetween(from: string, to: string): number {
     return Math.floor((b - a) / 86_400_000);
 }
 
+export function currentSubjects(store: TemporalStore): string[] {
+    const subjects = new Set<string>();
+    for (const s of store.state) {
+        if (s.supersededBy === undefined) subjects.add(s.subject);
+    }
+    return [...subjects].sort();
+}
+
+function renderShortTerm(store: TemporalStore): string {
+    const current = store.state
+        .filter((s) => s.supersededBy === undefined)
+        .sort((a, b) => a.subject.localeCompare(b.subject));
+
+    const superseded = store.state
+        .filter(
+            (s): s is StateFact & { supersededOn: string } =>
+                s.supersededOn !== undefined,
+        )
+        .sort((a, b) => b.supersededOn.localeCompare(a.supersededOn));
+
+    const recent = [...store.events.recent].sort((a, b) =>
+        b.date.localeCompare(a.date),
+    );
+
+    if (
+        current.length === 0 &&
+        superseded.length === 0 &&
+        recent.length === 0
+    ) {
+        return "";
+    }
+
+    const lines: string[] = ["# Short-Term Memory", ""];
+
+    if (current.length > 0) {
+        lines.push("## State");
+        for (const s of current) {
+            lines.push(`- ${s.subject}: ${s.value}  (since ${s.validFrom})`);
+        }
+        lines.push("");
+    }
+
+    if (superseded.length > 0) {
+        lines.push("### Previously (superseded — do not follow)");
+        for (const s of superseded) {
+            lines.push(
+                `- ${s.subject}: ${s.value}  (${s.validFrom} → ${s.supersededOn})`,
+            );
+        }
+        lines.push("");
+    }
+
+    if (recent.length > 0) {
+        lines.push("## Recent events");
+        for (const e of recent) {
+            lines.push(`- ${e.date}: ${e.summary}`);
+        }
+        lines.push("");
+    }
+
+    return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function renderLongTerm(store: TemporalStore): string {
+    const weekly = [...store.events.weekly].sort((a, b) =>
+        b.weekOf.localeCompare(a.weekOf),
+    );
+    if (weekly.length === 0) return "";
+
+    const lines: string[] = ["# Long-Term Memory", ""];
+    for (const w of weekly) {
+        lines.push(`## Week of ${w.weekOf}`);
+        lines.push(`- ${w.summary}`);
+        lines.push("");
+    }
+    return `${lines.join("\n").trimEnd()}\n`;
+}
+
+export function renderMarkdown(
+    store: TemporalStore,
+    _today: string,
+): { shortTerm: string; longTerm: string } {
+    return {
+        shortTerm: renderShortTerm(store),
+        longTerm: renderLongTerm(store),
+    };
+}
+
 export function rollEvents(
     store: TemporalStore,
     today: string,

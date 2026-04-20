@@ -3,11 +3,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+    currentSubjects,
     EMPTY_STORE,
     mergeExtracted,
     nextId,
     normalizeSubject,
     readTemporal,
+    renderMarkdown,
     rollEvents,
     weekOfMonday,
     writeTemporal,
@@ -468,5 +470,225 @@ describe("rollEvents", () => {
         const result = rollEvents(store, "2026-04-30", 3);
         const weeks = result.events.weekly.map((w) => w.weekOf);
         expect(weeks).toEqual([...weeks].sort());
+    });
+});
+
+const FIXTURE_DIR = path.resolve("tests/fixtures/temporal");
+
+function readFixture(name: string): string {
+    return readFileSync(path.join(FIXTURE_DIR, name), "utf8").trim();
+}
+
+describe("currentSubjects", () => {
+    it("returns only non-superseded subjects, sorted", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            state: [
+                {
+                    id: "s1",
+                    subject: "pkg-manager",
+                    value: "pnpm",
+                    validFrom: "2026-03-12",
+                    supersededBy: "s2",
+                    supersededOn: "2026-04-01",
+                },
+                {
+                    id: "s2",
+                    subject: "pkg-manager",
+                    value: "npm",
+                    validFrom: "2026-04-01",
+                    supersedes: ["s1"],
+                },
+                {
+                    id: "s3",
+                    subject: "test-runner",
+                    value: "vitest",
+                    validFrom: "2026-03-12",
+                },
+            ],
+        };
+        expect(currentSubjects(store)).toEqual(["pkg-manager", "test-runner"]);
+    });
+
+    it("returns empty array for empty store", () => {
+        expect(currentSubjects(EMPTY_STORE)).toEqual([]);
+    });
+});
+
+describe("renderMarkdown", () => {
+    const RICH_STORE: TemporalStore = {
+        version: 1,
+        state: [
+            {
+                id: "s1",
+                subject: "pkg-manager",
+                value: "pnpm",
+                validFrom: "2026-03-12",
+                supersededBy: "s4",
+                supersededOn: "2026-04-01",
+            },
+            {
+                id: "s2",
+                subject: "test-runner",
+                value: "vitest",
+                validFrom: "2026-03-12",
+            },
+            {
+                id: "s3",
+                subject: "ci-provider",
+                value: "github-actions",
+                validFrom: "2026-03-12",
+            },
+            {
+                id: "s4",
+                subject: "pkg-manager",
+                value: "npm (migrated from pnpm)",
+                validFrom: "2026-04-01",
+                supersedes: ["s1"],
+            },
+        ],
+        events: {
+            recent: [
+                { id: "e1", date: "2026-04-01", summary: "pnpm→npm migration" },
+                { id: "e2", date: "2026-03-30", summary: "biome 4-space" },
+            ],
+            weekly: [
+                {
+                    id: "w1",
+                    weekOf: "2026-03-09",
+                    summary: "Set up vitest harness; 118 tests green.",
+                },
+            ],
+        },
+    };
+
+    it("renders short-term matching golden fixture", () => {
+        const { shortTerm } = renderMarkdown(RICH_STORE, "2026-04-20");
+        expect(shortTerm.trim()).toBe(readFixture("rendered-shortTerm.md"));
+    });
+
+    it("renders long-term matching golden fixture", () => {
+        const { longTerm } = renderMarkdown(RICH_STORE, "2026-04-20");
+        expect(longTerm.trim()).toBe(readFixture("rendered-longTerm.md"));
+    });
+
+    it("omits the Previously section when no superseded facts exist", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            state: [
+                {
+                    id: "s1",
+                    subject: "pkg-manager",
+                    value: "npm",
+                    validFrom: "2026-04-01",
+                },
+            ],
+        };
+        const { shortTerm } = renderMarkdown(store, "2026-04-20");
+        expect(shortTerm).not.toContain("Previously");
+    });
+
+    it("returns empty strings for an empty store", () => {
+        const { shortTerm, longTerm } = renderMarkdown(
+            EMPTY_STORE,
+            "2026-04-20",
+        );
+        expect(shortTerm).toBe("");
+        expect(longTerm).toBe("");
+    });
+
+    it("sorts current state alphabetically by subject", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            state: [
+                {
+                    id: "s1",
+                    subject: "z-last",
+                    value: "x",
+                    validFrom: "2026-04-01",
+                },
+                {
+                    id: "s2",
+                    subject: "a-first",
+                    value: "y",
+                    validFrom: "2026-04-01",
+                },
+            ],
+        };
+        const { shortTerm } = renderMarkdown(store, "2026-04-20");
+        const zIdx = shortTerm.indexOf("z-last");
+        const aIdx = shortTerm.indexOf("a-first");
+        expect(aIdx).toBeGreaterThan(-1);
+        expect(aIdx).toBeLessThan(zIdx);
+    });
+
+    it("sorts superseded entries most-recent-first", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            state: [
+                {
+                    id: "s1",
+                    subject: "a",
+                    value: "old",
+                    validFrom: "2026-01-01",
+                    supersededBy: "s2",
+                    supersededOn: "2026-02-01",
+                },
+                {
+                    id: "s2",
+                    subject: "a",
+                    value: "mid",
+                    validFrom: "2026-02-01",
+                    supersedes: ["s1"],
+                    supersededBy: "s3",
+                    supersededOn: "2026-04-01",
+                },
+                {
+                    id: "s3",
+                    subject: "a",
+                    value: "new",
+                    validFrom: "2026-04-01",
+                    supersedes: ["s2"],
+                },
+            ],
+        };
+        const { shortTerm } = renderMarkdown(store, "2026-04-20");
+        const midIdx = shortTerm.indexOf("mid");
+        const oldIdx = shortTerm.indexOf("old");
+        expect(midIdx).toBeLessThan(oldIdx);
+    });
+
+    it("sorts recent events reverse-chronologically", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            events: {
+                recent: [
+                    { id: "e1", date: "2026-03-30", summary: "older" },
+                    { id: "e2", date: "2026-04-01", summary: "newer" },
+                ],
+                weekly: [],
+            },
+        };
+        const { shortTerm } = renderMarkdown(store, "2026-04-20");
+        const newerIdx = shortTerm.indexOf("newer");
+        const olderIdx = shortTerm.indexOf("older");
+        expect(newerIdx).toBeLessThan(olderIdx);
+    });
+
+    it("sorts weekly long-term reverse-chronologically", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            events: {
+                recent: [],
+                weekly: [
+                    { id: "w1", weekOf: "2026-03-09", summary: "early" },
+                    { id: "w2", weekOf: "2026-03-16", summary: "late" },
+                ],
+            },
+        };
+        const { longTerm } = renderMarkdown(store, "2026-04-20");
+        const lateIdx = longTerm.indexOf("late");
+        const earlyIdx = longTerm.indexOf("early");
+        expect(lateIdx).toBeLessThan(earlyIdx);
     });
 });
