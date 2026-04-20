@@ -6,31 +6,27 @@ import { acquireLock } from "../helpers/lock.ts";
 import { createLogger } from "../helpers/logger.ts";
 import {
     listEpisodes,
-    readLongTerm,
-    readShortTerm,
-    writeLongTerm,
-    writeShortTerm,
+    writeDerivedMemoryFiles,
 } from "../helpers/memory-files.ts";
 import { resolvePaths } from "../helpers/paths.ts";
 import { loadPrompt, renderPrompt } from "../helpers/prompts.ts";
+import {
+    currentSubjects,
+    mergeExtracted,
+    readTemporal,
+    renderMarkdown,
+    rollEvents,
+    writeTemporal,
+} from "../helpers/temporal.ts";
+import type { ExtractedPayload } from "../helpers/types.ts";
 
-// ---------------------------------------------------------------------------
-// Response parser
-// ---------------------------------------------------------------------------
-
-export function parseConsolidateResponse(raw: string): {
-    shortTerm: string;
-    longTerm: string;
-} {
-    // Strip optional code fences that Haiku sometimes wraps around the output
+export function parseExtractResponse(raw: string): ExtractedPayload {
     let text = raw.trim();
     if (text.startsWith("```")) {
         const firstNewline = text.indexOf("\n");
         if (firstNewline !== -1) {
-            // Drop the opening fence line (e.g. "```" or "```markdown")
             text = text.slice(firstNewline + 1);
         }
-        // Drop matching closing fence
         const closingFence = text.lastIndexOf("```");
         if (closingFence !== -1) {
             text = text.slice(0, closingFence);
@@ -38,54 +34,64 @@ export function parseConsolidateResponse(raw: string): {
         text = text.trim();
     }
 
-    const SHORT_MARKER = "===SHORT-TERM===";
-    const LONG_MARKER = "===LONG-TERM===";
-
-    const shortIdx = text.indexOf(SHORT_MARKER);
-    const longIdx = text.indexOf(LONG_MARKER);
-
-    if (shortIdx === -1) {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(text);
+    } catch {
         const snippet = raw.slice(0, 120).replace(/\n/g, "\\n");
-        throw new Error(
-            `Missing ===SHORT-TERM=== marker in response. Got: "${snippet}"`,
-        );
+        throw new Error(`Invalid JSON in Haiku response: "${snippet}"`);
     }
 
-    if (longIdx === -1) {
-        const snippet = raw.slice(0, 120).replace(/\n/g, "\\n");
-        throw new Error(
-            `Missing ===LONG-TERM=== marker in response. Got: "${snippet}"`,
-        );
+    if (typeof parsed !== "object" || parsed === null) {
+        throw new Error("Haiku response is not an object");
+    }
+    const obj = parsed as Record<string, unknown>;
+
+    if (!Array.isArray(obj.newFacts)) {
+        throw new Error("Missing or non-array newFacts in response");
+    }
+    if (!Array.isArray(obj.newEvents)) {
+        throw new Error("Missing or non-array newEvents in response");
     }
 
-    const shortTerm = text
-        .slice(shortIdx + SHORT_MARKER.length, longIdx)
-        .trim();
-    const longTerm = text.slice(longIdx + LONG_MARKER.length).trim();
+    const newFacts = obj.newFacts.map((item, i) => {
+        if (
+            typeof item !== "object" ||
+            item === null ||
+            typeof (item as Record<string, unknown>).subject !== "string" ||
+            typeof (item as Record<string, unknown>).value !== "string"
+        ) {
+            throw new Error(`newFacts[${i}] missing subject or value`);
+        }
+        const rec = item as { subject: string; value: string };
+        return { subject: rec.subject, value: rec.value };
+    });
 
-    return { shortTerm, longTerm };
+    const newEvents = obj.newEvents.map((item, i) => {
+        if (
+            typeof item !== "object" ||
+            item === null ||
+            typeof (item as Record<string, unknown>).date !== "string" ||
+            typeof (item as Record<string, unknown>).summary !== "string"
+        ) {
+            throw new Error(`newEvents[${i}] missing date or summary`);
+        }
+        const rec = item as { date: string; summary: string };
+        return { date: rec.date, summary: rec.summary };
+    });
+
+    return { newFacts, newEvents };
 }
-
-// ---------------------------------------------------------------------------
-// Main entrypoint
-// ---------------------------------------------------------------------------
 
 export async function main(
     argv: string[] = process.argv.slice(2),
 ): Promise<number> {
-    // argv accepted for forward compatibility but unused
     void argv;
 
-    // 1. Resolve paths
     const { pluginDir, dataDir } = resolvePaths();
-
-    // 2. Load config
     const cfg = loadConfig(pluginDir);
-
-    // 3. Create logger
     const logger = createLogger(dataDir, cfg.timezone);
 
-    // 4. Compute today in configured timezone (YYYY-MM-DD)
     const today = new Intl.DateTimeFormat("en-CA", {
         timeZone: cfg.timezone,
         year: "numeric",
@@ -93,15 +99,12 @@ export async function main(
         day: "2-digit",
     }).format(new Date());
 
-    // 5. List past episodes (exclude today)
     const episodes = listEpisodes(dataDir, { excludeDate: today });
-
     if (episodes.length === 0) {
         logger.log("consolidate", "no past episodes, skip");
         return 0;
     }
 
-    // 6. Acquire lock
     const lockPath = path.join(dataDir, "tmp", "consolidate.lock");
     mkdirSync(path.join(dataDir, "tmp"), { recursive: true });
 
@@ -115,7 +118,6 @@ export async function main(
     }
 
     try {
-        // 7. Build episodes text
         const episodesText = episodes
             .map(({ date, path: filePath }) => {
                 let content = "";
@@ -124,23 +126,23 @@ export async function main(
                 } catch {
                     content = "";
                 }
-                return `=== ${date} ===\n${content}`;
+                return `## ${date}\n${content}`;
             })
             .join("\n\n");
 
-        // 8. Read short-term and long-term memory
-        const shortTerm = readShortTerm(dataDir);
-        const longTerm = readLongTerm(dataDir);
+        const store = readTemporal(dataDir);
+        const glossary = currentSubjects(store);
+        const glossaryText =
+            glossary.length > 0
+                ? glossary.map((s) => `- ${s}`).join("\n")
+                : "(none yet)";
 
-        // 9. Build and render prompt
         const template = loadPrompt(pluginDir, "consolidate");
         const rendered = renderPrompt(template, {
             EPISODES: episodesText,
-            SHORT_TERM: shortTerm,
-            LONG_TERM: longTerm,
+            SUBJECT_GLOSSARY: glossaryText,
         });
 
-        // 10. Call haiku
         let response: Awaited<ReturnType<typeof callHaiku>>;
         try {
             response = await callHaiku(rendered);
@@ -150,26 +152,52 @@ export async function main(
             return 1;
         }
 
-        // 11. Parse response
-        let parsed: { shortTerm: string; longTerm: string };
+        let extracted: ExtractedPayload;
         try {
-            parsed = parseConsolidateResponse(response.text);
+            extracted = parseExtractResponse(response.text);
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : String(err);
             logger.log("consolidate", `parse error: ${msg}`);
             return 1;
         }
 
-        // 12. Write short-term and long-term memory
-        writeShortTerm(dataDir, parsed.shortTerm);
-        writeLongTerm(dataDir, parsed.longTerm);
+        const merged = rollEvents(
+            mergeExtracted(store, today, extracted),
+            today,
+            cfg.eventHorizonDays,
+        );
 
-        // 13. Delete consumed episode files
+        try {
+            writeTemporal(dataDir, merged);
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.log("consolidate", `writeTemporal failed: ${msg}`);
+            return 1;
+        }
+
+        const rendered_md = renderMarkdown(merged, today);
+        writeDerivedMemoryFiles(dataDir, rendered_md);
+
+        const estTokens = (s: string) => Math.ceil(s.length / 4);
+        const shortTok = estTokens(rendered_md.shortTerm);
+        const longTok = estTokens(rendered_md.longTerm);
+        if (shortTok > cfg.tokenSoftCap.shortTerm) {
+            logger.log(
+                "consolidate",
+                `shortTerm soft cap exceeded: ~${shortTok} > ${cfg.tokenSoftCap.shortTerm} tokens`,
+            );
+        }
+        if (longTok > cfg.tokenSoftCap.longTerm) {
+            logger.log(
+                "consolidate",
+                `longTerm soft cap exceeded: ~${longTok} > ${cfg.tokenSoftCap.longTerm} tokens`,
+            );
+        }
+
         for (const { path: filePath } of episodes) {
             rmSync(filePath, { force: true });
         }
 
-        // 14. Log tokens
         logger.logTokens("consolidate", {
             input: response.tokensIn,
             output: response.tokensOut,
@@ -179,12 +207,10 @@ export async function main(
 
         return 0;
     } finally {
-        // 15. Release lock
         releaseLock?.();
     }
 }
 
-// Only run if invoked as script (not during tests)
 if (import.meta.url === `file://${process.argv[1]}`) {
     main()
         .then(process.exit)

@@ -22,6 +22,8 @@ export interface Config {
     thresholds: { minHumanMessages: number; deltaLinesTrigger: number };
     features: { recovery: boolean };
     timezone: string;
+    eventHorizonDays: number;
+    tokenSoftCap: { shortTerm: number; longTerm: number };
 }
 
 export interface StateFact {

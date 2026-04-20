@@ -123,6 +123,15 @@ export function writeLongTerm(dataDir: string, content: string): void {
     atomicWrite(path.join(dataDir, "long-term-memory.md"), content);
 }
 
+export function writeDerivedMemoryFiles(
+    dataDir: string,
+    rendered: { shortTerm: string; longTerm: string },
+): void {
+    ensureDir(dataDir);
+    atomicWrite(path.join(dataDir, "short-term-memory.md"), rendered.shortTerm);
+    atomicWrite(path.join(dataDir, "long-term-memory.md"), rendered.longTerm);
+}
+
 // ---------------------------------------------------------------------------
 // Handover
 // ---------------------------------------------------------------------------
