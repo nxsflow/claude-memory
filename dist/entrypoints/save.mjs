@@ -10,7 +10,9 @@ var DEFAULTS = {
   cooldowns: { saveSeconds: 120, compactSeconds: 3600 },
   thresholds: { minHumanMessages: 3, deltaLinesTrigger: 50 },
   features: { recovery: true },
-  timezone: "UTC"
+  timezone: "UTC",
+  eventHorizonDays: 3,
+  tokenSoftCap: { shortTerm: 800, longTerm: 600 }
 };
 function loadConfig(pluginDir) {
   const file = path.join(pluginDir, "config.json");
@@ -21,7 +23,8 @@ function loadConfig(pluginDir) {
     ...raw,
     cooldowns: { ...DEFAULTS.cooldowns, ...raw.cooldowns ?? {} },
     thresholds: { ...DEFAULTS.thresholds, ...raw.thresholds ?? {} },
-    features: { ...DEFAULTS.features, ...raw.features ?? {} }
+    features: { ...DEFAULTS.features, ...raw.features ?? {} },
+    tokenSoftCap: { ...DEFAULTS.tokenSoftCap, ...raw.tokenSoftCap ?? {} }
   };
 }
 
