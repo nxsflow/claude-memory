@@ -23,3 +23,39 @@ export interface Config {
     features: { recovery: boolean };
     timezone: string;
 }
+
+export interface StateFact {
+    id: string;
+    subject: string;
+    value: string;
+    validFrom: string;
+    supersededBy?: string;
+    supersededOn?: string;
+    supersedes?: string[];
+}
+
+export interface EventRecord {
+    id: string;
+    date: string;
+    summary: string;
+}
+
+export interface WeeklyRecord {
+    id: string;
+    weekOf: string;
+    summary: string;
+}
+
+export interface TemporalStore {
+    version: 1;
+    state: StateFact[];
+    events: {
+        recent: EventRecord[];
+        weekly: WeeklyRecord[];
+    };
+}
+
+export interface ExtractedPayload {
+    newFacts: { subject: string; value: string }[];
+    newEvents: { date: string; summary: string }[];
+}
