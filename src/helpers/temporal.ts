@@ -6,7 +6,12 @@ import {
     writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import type { ExtractedPayload, StateFact, TemporalStore } from "./types.ts";
+import type {
+    EventRecord,
+    ExtractedPayload,
+    StateFact,
+    TemporalStore,
+} from "./types.ts";
 
 export const EMPTY_STORE: TemporalStore = {
     version: 1,
@@ -173,4 +178,83 @@ export function mergeExtracted(
     }
 
     return next;
+}
+
+export function weekOfMonday(date: string): string {
+    const [y, m, d] = date.split("-").map(Number);
+    const dt = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1));
+    const day = dt.getUTCDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+    const diff = day === 0 ? 6 : day - 1;
+    dt.setUTCDate(dt.getUTCDate() - diff);
+
+    const yy = dt.getUTCFullYear();
+    const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(dt.getUTCDate()).padStart(2, "0");
+    return `${yy}-${mm}-${dd}`;
+}
+
+function daysBetween(from: string, to: string): number {
+    const [fy, fm, fd] = from.split("-").map(Number);
+    const [ty, tm, td] = to.split("-").map(Number);
+    const a = Date.UTC(fy ?? 1970, (fm ?? 1) - 1, fd ?? 1);
+    const b = Date.UTC(ty ?? 1970, (tm ?? 1) - 1, td ?? 1);
+    return Math.floor((b - a) / 86_400_000);
+}
+
+export function rollEvents(
+    store: TemporalStore,
+    today: string,
+    horizonDays: number,
+): TemporalStore {
+    const next = cloneStore(store);
+    const stayRecent: EventRecord[] = [];
+    const toRoll: EventRecord[] = [];
+
+    for (const event of next.events.recent) {
+        const age = daysBetween(event.date, today);
+        if (age <= horizonDays) {
+            stayRecent.push(event);
+        } else {
+            toRoll.push(event);
+        }
+    }
+
+    if (toRoll.length === 0) {
+        return {
+            ...next,
+            events: { recent: stayRecent, weekly: next.events.weekly },
+        };
+    }
+
+    const weeklyById = new Map(next.events.weekly.map((w) => [w.weekOf, w]));
+
+    for (const event of toRoll) {
+        const wk = weekOfMonday(event.date);
+        const existing = weeklyById.get(wk);
+        if (existing !== undefined) {
+            existing.summary = `${existing.summary} · ${event.date}: ${event.summary}`;
+        } else {
+            const created = {
+                id: nextId(
+                    {
+                        ...next,
+                        events: {
+                            recent: [],
+                            weekly: [...weeklyById.values()],
+                        },
+                    },
+                    "w",
+                ),
+                weekOf: wk,
+                summary: `${event.date}: ${event.summary}`,
+            };
+            weeklyById.set(wk, created);
+        }
+    }
+
+    const weekly = [...weeklyById.values()].sort((a, b) =>
+        a.weekOf.localeCompare(b.weekOf),
+    );
+
+    return { ...next, events: { recent: stayRecent, weekly } };
 }

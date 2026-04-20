@@ -8,6 +8,8 @@ import {
     nextId,
     normalizeSubject,
     readTemporal,
+    rollEvents,
+    weekOfMonday,
     writeTemporal,
 } from "../../src/helpers/temporal.ts";
 import type { TemporalStore } from "../../src/helpers/types.ts";
@@ -355,5 +357,116 @@ describe("mergeExtracted: events", () => {
             newEvents: [{ date: "2026-04-20", summary: "hello" }],
         });
         expect(result.events.recent).toEqual(store.events.recent);
+    });
+});
+
+describe("weekOfMonday", () => {
+    it("returns the date itself for a Monday", () => {
+        expect(weekOfMonday("2026-03-09")).toBe("2026-03-09"); // Monday
+    });
+
+    it("returns the Monday for a Sunday", () => {
+        expect(weekOfMonday("2026-03-15")).toBe("2026-03-09"); // Sunday
+    });
+
+    it("returns the Monday for a Friday", () => {
+        expect(weekOfMonday("2026-04-17")).toBe("2026-04-13"); // Friday
+    });
+});
+
+describe("rollEvents", () => {
+    it("keeps events within the horizon in recent", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            events: {
+                recent: [
+                    { id: "e1", date: "2026-04-20", summary: "today" },
+                    { id: "e2", date: "2026-04-19", summary: "yesterday" },
+                    { id: "e3", date: "2026-04-17", summary: "3 days ago" },
+                ],
+                weekly: [],
+            },
+        };
+        const result = rollEvents(store, "2026-04-20", 3);
+        expect(result.events.recent.map((e) => e.id)).toEqual([
+            "e1",
+            "e2",
+            "e3",
+        ]);
+        expect(result.events.weekly).toEqual([]);
+    });
+
+    it("rolls events older than horizon into weekly", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            events: {
+                recent: [
+                    { id: "e1", date: "2026-04-20", summary: "today" },
+                    { id: "e2", date: "2026-04-16", summary: "4 days ago" },
+                ],
+                weekly: [],
+            },
+        };
+        const result = rollEvents(store, "2026-04-20", 3);
+        expect(result.events.recent.map((e) => e.id)).toEqual(["e1"]);
+        expect(result.events.weekly.length).toBe(1);
+        const week = result.events.weekly[0];
+        expect(week?.weekOf).toBe("2026-04-13");
+        expect(week?.summary).toContain("4 days ago");
+    });
+
+    it("merges events from the same week into one weekly entry", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            events: {
+                recent: [
+                    { id: "e1", date: "2026-04-13", summary: "Mon" },
+                    { id: "e2", date: "2026-04-15", summary: "Wed" },
+                    { id: "e3", date: "2026-04-17", summary: "Fri" },
+                ],
+                weekly: [],
+            },
+        };
+        const result = rollEvents(store, "2026-04-30", 3);
+        expect(result.events.recent).toEqual([]);
+        expect(result.events.weekly.length).toBe(1);
+        const summary = result.events.weekly[0]?.summary ?? "";
+        expect(summary).toContain("Mon");
+        expect(summary).toContain("Wed");
+        expect(summary).toContain("Fri");
+    });
+
+    it("appends to an existing weekly entry for the same week", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            events: {
+                recent: [{ id: "e2", date: "2026-04-15", summary: "Wed" }],
+                weekly: [
+                    { id: "w1", weekOf: "2026-04-13", summary: "Mon thing" },
+                ],
+            },
+        };
+        const result = rollEvents(store, "2026-04-30", 3);
+        expect(result.events.weekly.length).toBe(1);
+        const summary = result.events.weekly[0]?.summary ?? "";
+        expect(summary).toContain("Mon thing");
+        expect(summary).toContain("Wed");
+    });
+
+    it("sorts weekly entries ascending by weekOf", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            events: {
+                recent: [
+                    { id: "e1", date: "2026-04-01", summary: "A" },
+                    { id: "e2", date: "2026-03-10", summary: "B" },
+                    { id: "e3", date: "2026-03-20", summary: "C" },
+                ],
+                weekly: [],
+            },
+        };
+        const result = rollEvents(store, "2026-04-30", 3);
+        const weeks = result.events.weekly.map((w) => w.weekOf);
+        expect(weeks).toEqual([...weeks].sort());
     });
 });
