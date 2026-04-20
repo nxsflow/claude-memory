@@ -1,0 +1,18 @@
+# OS
+.DS_Store
+
+# Node output
+node_modules/
+
+# Test coverage reports
+coverage/
+
+# Claude Code per-user state
+.claude/settings.local.json
+
+# Plugin runtime state (auto-generated, project-local)
+.claude-memory/logs
+.claude-memory/tmp
+
+# User-authored agent persona (never commit someone else's agent-role)
+agent-role.md

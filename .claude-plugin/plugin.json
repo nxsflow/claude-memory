@@ -1,0 +1,11 @@
+{
+    "name": "claude-memory",
+    "description": "Build up a continuous learning mechanism for the Claude Code coding assistant with short-term and long-term memory.",
+    "version": "0.1.0",
+    "author": {
+        "name": "NexusFlow"
+    },
+    "license": "Apache-2.0",
+    "repository": "https://github.com/nxsflow/claude-memory",
+    "keywords": ["memory", "context", "persistence", "session"]
+}

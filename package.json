@@ -1,0 +1,23 @@
+{
+    "name": "nxsflow-claude-memory",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Build up a continuous learning mechanism for the Claude Code coding assistant with short-term and long-term memory.",
+    "scripts": {
+        "build": "esbuild src/entrypoints/*.ts --bundle --platform=node --target=node20 --format=esm --outdir=dist/entrypoints --out-extension:.js=.mjs",
+        "typecheck": "tsc --noEmit",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:coverage": "vitest run --coverage",
+        "lint": "biome check .",
+        "format": "biome format --write ."
+    },
+    "devDependencies": {
+        "@biomejs/biome": "2.4.12",
+        "@types/node": "^25.6.0",
+        "@vitest/coverage-v8": "^4.1.4",
+        "esbuild": "^0.28.0",
+        "typescript": "^5.9.3",
+        "vitest": "^4.1.4"
+    }
+}
