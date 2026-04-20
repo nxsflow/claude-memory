@@ -2,7 +2,7 @@
 
 Claude Code starts every session blank. It doesn't know what you worked on yesterday, what conventions your team follows, or what mistakes it already made. You re-explain everything, every time.
 
-Claude Remember fixes that. It hooks into Claude Code's lifecycle — saving sessions automatically, compressing them through Haiku into layered summaries, and loading them back into context on the next session start. No manual prompting, no copy-pasting notes. The agent starts every session with its history already present.
+Claude Remember fixes that. It hooks into Claude Code's lifecycle — saving sessions automatically, distilling them into layered summaries, and loading them back into context on the next session start. Recent exchanges are summarised through Haiku; older runs are distilled into durable **state facts** (project configuration that supersedes itself when contradicted) and dated **events** (append-only happenings that roll up by week). No manual prompting, no copy-pasting notes.
 
 The result: your Claude Code instance develops continuity. It remembers what it learned, what broke, what worked. Not perfect recall — compressed, practical memory that fits in minimal tokens.
 
@@ -48,7 +48,7 @@ Look at the `version` field in `.claude-plugin/plugin.json`.
 
 ### Changelog
 
-_No releases yet._
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## How it works
 
@@ -62,15 +62,18 @@ flowchart TD
     F --> G["compact (TS)"]
     G --> H["episodic-memory/YYYY-MM-DD.md"]
     H --> I["consolidate (TS)"]
-    I --> J["short-term-memory.md + long-term-memory.md"]
+    I --> J["temporal.json (state facts + events)"]
+    J --> K["short-term-memory.md + long-term-memory.md (rendered)"]
 ```
 
 Each layer compresses the one above it. Raw exchanges become one-line summaries. Daily episodes
-become condensed multi-day blocks. The result: full context in minimal tokens.
+are extracted into `temporal.json` — the source of truth for consolidated memory — and rendered
+into the two `.md` views on every `consolidate` run. The result: full context in minimal tokens.
 
 On session start, the `SessionStart` hook automatically injects into Claude's context:
 
 - `agent-role.md` — the agent's role and values
+- `core-memories.md` — identity-defining moments (you write this)
 - `session-handover.md` — the handover note from the last session (one-shot, then cleared)
 - `episodic-memory/<today>.md` — today's episode so far
 - `working-memory.md` — current session buffer
@@ -103,7 +106,7 @@ In practice, running this all day costs **a few cents per day**. The Anthropic A
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/entrypoints/session-start.mjs\" 2>> \"${CLAUDE_PROJECT_DIR:-.}/.claude-memory/logs/hook-errors.log\""
+            "command": "mkdir -p \"${CLAUDE_PROJECT_DIR:-.}/.claude-memory/logs\" && node \"${CLAUDE_PLUGIN_ROOT}/dist/entrypoints/session-start.mjs\" 2>> \"${CLAUDE_PROJECT_DIR:-.}/.claude-memory/logs/hook-errors.log\""
           }
         ]
       }
@@ -113,7 +116,7 @@ In practice, running this all day costs **a few cents per day**. The Anthropic A
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/entrypoints/post-tool-use.mjs\" 2>> \"${CLAUDE_PROJECT_DIR:-.}/.claude-memory/logs/hook-errors.log\""
+            "command": "mkdir -p \"${CLAUDE_PROJECT_DIR:-.}/.claude-memory/logs\" && node \"${CLAUDE_PLUGIN_ROOT}/dist/entrypoints/post-tool-use.mjs\" 2>> \"${CLAUDE_PROJECT_DIR:-.}/.claude-memory/logs/hook-errors.log\""
           }
         ]
       }
@@ -159,14 +162,17 @@ The pipeline writes to `.claude-memory/` inside your project (created automatica
 
 Drop a `config.json` next to `.claude-plugin/plugin.json` in the plugin install directory to override any of the defaults below. Every key is optional — missing keys fall back to the defaults (see `src/helpers/config.ts`).
 
-| Key                            | Default | Purpose                                           |
-| ------------------------------ | ------- | ------------------------------------------------- |
-| `cooldowns.saveSeconds`        | `120`   | Minimum seconds between saves                     |
-| `cooldowns.compactSeconds`     | `3600`  | Minimum seconds between compact runs              |
-| `thresholds.minHumanMessages`  | `3`     | Minimum human messages before saving              |
-| `thresholds.deltaLinesTrigger` | `50`    | JSONL line delta that triggers auto-save          |
-| `features.recovery`            | `true`  | Recover missed saves on session start             |
-| `timezone`                     | `UTC`   | Timezone for timestamps and daily file boundaries |
+| Key                            | Default | Purpose                                                                |
+| ------------------------------ | ------- | ---------------------------------------------------------------------- |
+| `cooldowns.saveSeconds`        | `120`   | Minimum seconds between saves                                          |
+| `cooldowns.compactSeconds`     | `3600`  | Minimum seconds between compact runs                                   |
+| `thresholds.minHumanMessages`  | `3`     | Minimum human messages before saving                                   |
+| `thresholds.deltaLinesTrigger` | `50`    | JSONL line delta that triggers auto-save                               |
+| `features.recovery`            | `true`  | Recover missed saves on session start                                  |
+| `timezone`                     | `UTC`   | Timezone for timestamps and daily file boundaries                      |
+| `eventHorizonDays`             | `3`     | Days an event stays in `events.recent` before rolling into weekly bins |
+| `tokenSoftCap.shortTerm`       | `800`   | Soft cap (approx. tokens) for rendered `short-term-memory.md`          |
+| `tokenSoftCap.longTerm`        | `600`   | Soft cap (approx. tokens) for rendered `long-term-memory.md`           |
 
 ## Running tests
 
@@ -178,11 +184,12 @@ npm install && npm test
 
 ```
 src/entrypoints/    TypeScript — session-start, post-tool-use, save, compact, consolidate
-src/helpers/        TypeScript — config, paths, logger, lock, cooldown, jsonl, haiku, prompts, memory-files
-prompts/            Haiku prompt templates ({{PLACEHOLDER}} substitution)
+src/helpers/        TypeScript — config, paths, logger, lock, cooldown, jsonl, haiku, prompts,
+                    memory-files, temporal, types
+prompts/            Haiku prompt templates ({{PLACEHOLDER}} substitution) + session-preamble
 hooks/hooks.json    Hook registration — SessionStart + PostToolUse → dist/entrypoints/*.mjs
 skills/             /session-handover slash command
-tests/              vitest suite (118 tests)
+tests/              vitest suite (175 tests across tests/helpers/ + tests/entrypoints/)
 ```
 
 ## License
