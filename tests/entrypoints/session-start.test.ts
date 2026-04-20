@@ -224,6 +224,66 @@ describe("session-start entrypoint", () => {
         expect(consolidateCall).toBeDefined();
     });
 
+    it("agent-role.md missing but example present: emits first-run bootstrap with template", async () => {
+        writeFileSync(
+            path.join(pluginDir, "agent-role.example.md"),
+            "# Agent Role\n\nI'm the dev partner on this team.\n",
+        );
+
+        const code = await main();
+
+        expect(code).toBe(0);
+
+        const out = getStdout();
+        expect(out).toContain("=== FIRST-RUN BOOTSTRAP ===");
+        expect(out).toContain("agent-role.md");
+        expect(out).toContain("I'm the dev partner on this team.");
+    });
+
+    it("agent-role.md missing and no example template: bootstrap section silently skipped", async () => {
+        const code = await main();
+
+        expect(code).toBe(0);
+
+        const out = getStdout();
+        expect(out).not.toContain("=== FIRST-RUN BOOTSTRAP ===");
+    });
+
+    it("agent-role.md present: bootstrap NOT emitted even when example exists", async () => {
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(
+            path.join(dataDir, "agent-role.md"),
+            "I am the assistant.",
+        );
+        writeFileSync(
+            path.join(pluginDir, "agent-role.example.md"),
+            "# Template\n",
+        );
+
+        const code = await main();
+
+        expect(code).toBe(0);
+
+        const out = getStdout();
+        expect(out).not.toContain("=== FIRST-RUN BOOTSTRAP ===");
+    });
+
+    it("agent-role.md exists but is whitespace-only: bootstrap IS emitted", async () => {
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(path.join(dataDir, "agent-role.md"), "   \n\n  ");
+        writeFileSync(
+            path.join(pluginDir, "agent-role.example.md"),
+            "# Agent Role\n",
+        );
+
+        const code = await main();
+
+        expect(code).toBe(0);
+
+        const out = getStdout();
+        expect(out).toContain("=== FIRST-RUN BOOTSTRAP ===");
+    });
+
     it("no paths resolvable: must not throw; returns 0", async () => {
         delete process.env.CLAUDE_PROJECT_DIR;
         delete process.env.CLAUDE_PLUGIN_ROOT;

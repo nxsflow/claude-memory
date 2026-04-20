@@ -210,6 +210,46 @@ export async function main(): Promise<number> {
         }
     }
 
+    // 6b. First-run bootstrap: if agent-role.md is absent or empty and an
+    // example template ships with the plugin, ask the agent to author the
+    // file from whatever context it already has. Skipped silently on every
+    // subsequent session once the file has content.
+    try {
+        const agentRolePath = path.join(dataDir, "agent-role.md");
+        let hasAgentRole = false;
+        if (existsSync(agentRolePath)) {
+            try {
+                hasAgentRole =
+                    readFileSync(agentRolePath, "utf8").trim().length > 0;
+            } catch {
+                hasAgentRole = false;
+            }
+        }
+
+        if (!hasAgentRole) {
+            const examplePath = path.join(pluginDir, "agent-role.example.md");
+            if (existsSync(examplePath)) {
+                const template = readFileSync(examplePath, "utf8");
+                process.stdout.write("=== FIRST-RUN BOOTSTRAP ===\n");
+                process.stdout.write(
+                    `\`${agentRolePath}\` does not exist yet. Before responding to the user, create it using the template below as the starting structure, tailored from whatever context you already have about this user, this project, and how they work with you (CLAUDE.md, other memory, open files, recent commits).\n\n`,
+                );
+                process.stdout.write(
+                    "Be honest: when you don't know something, leave that part close to the template wording or drop the section — do not invent details. The user will refine the file later.\n\n",
+                );
+                process.stdout.write("Template (agent-role.example.md):\n\n");
+                process.stdout.write(template);
+                if (!template.endsWith("\n")) {
+                    process.stdout.write("\n");
+                }
+                process.stdout.write("\n");
+            }
+        }
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.log("session-start", `bootstrap check failed: ${msg}`);
+    }
+
     // 7. Consume handover after emitting
     try {
         consumeHandover(dataDir);

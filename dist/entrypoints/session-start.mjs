@@ -374,6 +374,41 @@ async function main() {
     }
   }
   try {
+    const agentRolePath = path6.join(dataDir, "agent-role.md");
+    let hasAgentRole = false;
+    if (existsSync5(agentRolePath)) {
+      try {
+        hasAgentRole = readFileSync4(agentRolePath, "utf8").trim().length > 0;
+      } catch {
+        hasAgentRole = false;
+      }
+    }
+    if (!hasAgentRole) {
+      const examplePath = path6.join(pluginDir, "agent-role.example.md");
+      if (existsSync5(examplePath)) {
+        const template = readFileSync4(examplePath, "utf8");
+        process.stdout.write("=== FIRST-RUN BOOTSTRAP ===\n");
+        process.stdout.write(
+          `\`${agentRolePath}\` does not exist yet. Before responding to the user, create it using the template below as the starting structure, tailored from whatever context you already have about this user, this project, and how they work with you (CLAUDE.md, other memory, open files, recent commits).
+
+`
+        );
+        process.stdout.write(
+          "Be honest: when you don't know something, leave that part close to the template wording or drop the section \u2014 do not invent details. The user will refine the file later.\n\n"
+        );
+        process.stdout.write("Template (agent-role.example.md):\n\n");
+        process.stdout.write(template);
+        if (!template.endsWith("\n")) {
+          process.stdout.write("\n");
+        }
+        process.stdout.write("\n");
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.log("session-start", `bootstrap check failed: ${msg}`);
+  }
+  try {
     consumeHandover(dataDir);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
