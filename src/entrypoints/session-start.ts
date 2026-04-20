@@ -17,6 +17,7 @@ import {
 } from "../helpers/memory-files.ts";
 import { resolvePaths, sessionJsonlDir } from "../helpers/paths.ts";
 import { loadPrompt } from "../helpers/prompts.ts";
+import { readTemporal, renderMarkdown } from "../helpers/temporal.ts";
 
 // ---------------------------------------------------------------------------
 // Internal helper — emit a file section to stdout if present and non-empty.
@@ -171,33 +172,68 @@ export async function main(): Promise<number> {
     }
 
     // 6. Emit memory sections wrapped in "=== MEMORY ==="
-    const memoryFiles = [
+    const alwaysFiles = [
         path.join(dataDir, "agent-role.md"),
         path.join(dataDir, "core-memories.md"),
         path.join(dataDir, "session-handover.md"),
         path.join(dataDir, "episodic-memory", `${today}.md`),
         path.join(dataDir, "working-memory.md"),
-        path.join(dataDir, "short-term-memory.md"),
-        path.join(dataDir, "long-term-memory.md"),
     ];
 
-    // Collect which files have content
-    const fileResults: { filePath: string; hasContent: boolean }[] =
-        memoryFiles.map((filePath) => {
-            if (!existsSync(filePath)) return { filePath, hasContent: false };
-            try {
-                const content = readFileSync(filePath, "utf8");
-                return { filePath, hasContent: content.trim().length > 0 };
-            } catch {
-                return { filePath, hasContent: false };
-            }
-        });
+    const alwaysResults = alwaysFiles.map((filePath) => {
+        if (!existsSync(filePath)) return { filePath, hasContent: false };
+        try {
+            const content = readFileSync(filePath, "utf8");
+            return { filePath, hasContent: content.trim().length > 0 };
+        } catch {
+            return { filePath, hasContent: false };
+        }
+    });
 
-    const anyContent = fileResults.some((r) => r.hasContent);
+    // Prefer temporal.json; fall back to legacy short/long-term .md files.
+    let temporalShortTerm = "";
+    let temporalLongTerm = "";
+    let usedTemporal = false;
+    try {
+        const store = readTemporal(dataDir);
+        if (
+            store.state.length > 0 ||
+            store.events.recent.length > 0 ||
+            store.events.weekly.length > 0
+        ) {
+            const r = renderMarkdown(store, today);
+            temporalShortTerm = r.shortTerm;
+            temporalLongTerm = r.longTerm;
+            usedTemporal = true;
+        }
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.log("session-start", `readTemporal failed: ${msg}`);
+    }
+
+    const legacyShortPath = path.join(dataDir, "short-term-memory.md");
+    const legacyLongPath = path.join(dataDir, "long-term-memory.md");
+
+    const legacyShort =
+        !usedTemporal && existsSync(legacyShortPath)
+            ? readFileSync(legacyShortPath, "utf8")
+            : "";
+    const legacyLong =
+        !usedTemporal && existsSync(legacyLongPath)
+            ? readFileSync(legacyLongPath, "utf8")
+            : "";
+
+    const shortTermContent = usedTemporal ? temporalShortTerm : legacyShort;
+    const longTermContent = usedTemporal ? temporalLongTerm : legacyLong;
+
+    const anyContent =
+        alwaysResults.some((r) => r.hasContent) ||
+        shortTermContent.trim().length > 0 ||
+        longTermContent.trim().length > 0;
 
     if (anyContent) {
         process.stdout.write("=== MEMORY ===\n\n");
-        for (const { filePath } of fileResults) {
+        for (const { filePath } of alwaysResults) {
             try {
                 emitFile(filePath);
             } catch (err: unknown) {
@@ -208,6 +244,58 @@ export async function main(): Promise<number> {
                 );
             }
         }
+        if (shortTermContent.trim().length > 0) {
+            process.stdout.write("--- short-term-memory.md ---\n");
+            process.stdout.write(shortTermContent);
+            if (!shortTermContent.endsWith("\n")) process.stdout.write("\n");
+            process.stdout.write("\n");
+        }
+        if (longTermContent.trim().length > 0) {
+            process.stdout.write("--- long-term-memory.md ---\n");
+            process.stdout.write(longTermContent);
+            if (!longTermContent.endsWith("\n")) process.stdout.write("\n");
+            process.stdout.write("\n");
+        }
+    }
+
+    // 6b. First-run bootstrap: if agent-role.md is absent or empty and an
+    // example template ships with the plugin, ask the agent to author the
+    // file from whatever context it already has. Skipped silently on every
+    // subsequent session once the file has content.
+    try {
+        const agentRolePath = path.join(dataDir, "agent-role.md");
+        let hasAgentRole = false;
+        if (existsSync(agentRolePath)) {
+            try {
+                hasAgentRole =
+                    readFileSync(agentRolePath, "utf8").trim().length > 0;
+            } catch {
+                hasAgentRole = false;
+            }
+        }
+
+        if (!hasAgentRole) {
+            const examplePath = path.join(pluginDir, "agent-role.example.md");
+            if (existsSync(examplePath)) {
+                const template = readFileSync(examplePath, "utf8");
+                process.stdout.write("=== FIRST-RUN BOOTSTRAP ===\n");
+                process.stdout.write(
+                    `\`${agentRolePath}\` does not exist yet. Before responding to the user, create it using the template below as the starting structure, tailored from whatever context you already have about this user, this project, and how they work with you (CLAUDE.md, other memory, open files, recent commits).\n\n`,
+                );
+                process.stdout.write(
+                    "Be honest: when you don't know something, leave that part close to the template wording or drop the section — do not invent details. The user will refine the file later.\n\n",
+                );
+                process.stdout.write("Template (agent-role.example.md):\n\n");
+                process.stdout.write(template);
+                if (!template.endsWith("\n")) {
+                    process.stdout.write("\n");
+                }
+                process.stdout.write("\n");
+            }
+        }
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.log("session-start", `bootstrap check failed: ${msg}`);
     }
 
     // 7. Consume handover after emitting

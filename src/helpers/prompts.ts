@@ -22,27 +22,25 @@ export function renderPrompt(
     template: string,
     vars: Record<string, string>,
 ): string {
-    const result = template.replace(
-        /\{\{([A-Z_]+)\}\}/g,
-        (match, key: string) => {
-            return vars[key] ?? match;
-        },
-    );
-
-    const allMatches = [...result.matchAll(/\{\{([A-Z_]+)\}\}/g)];
-    const remaining = [
+    // Collect placeholders in the ORIGINAL template; if a substituted value
+    // (e.g. a conversation extract or prior memory entry) happens to contain
+    // `{{FOO}}` literally, that is user content, not a template error.
+    const templateMatches = [...template.matchAll(/\{\{([A-Z_]+)\}\}/g)];
+    const missing = [
         ...new Set(
-            allMatches
+            templateMatches
                 .map((m) => m[1])
-                .filter((k): k is string => k !== undefined),
+                .filter((k): k is string => k !== undefined && !(k in vars)),
         ),
     ];
 
-    if (remaining.length > 0) {
+    if (missing.length > 0) {
         throw new Error(
-            `Unsubstituted template placeholders: ${remaining.join(", ")}`,
+            `Unsubstituted template placeholders: ${missing.join(", ")}`,
         );
     }
 
-    return result;
+    return template.replace(/\{\{([A-Z_]+)\}\}/g, (match, key: string) => {
+        return vars[key] ?? match;
+    });
 }

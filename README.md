@@ -122,7 +122,7 @@ In practice, running this all day costs **a few cents per day**. The Anthropic A
 }
 ```
 
-1. Write your agent's role in `.claude-memory/agent-role.md` (see `agent-role.example.md`).
+1. `.claude-memory/agent-role.md` is created automatically on your first session. The `SessionStart` hook detects it's missing and asks the agent to author it from `agent-role.example.md` plus whatever context it already has about you and the project. Edit the file any time to refine it — subsequent sessions just load it.
 2. Set **Auto-compact** to `false` in Claude Code preferences (`/config`) — auto-compact discards conversation history before the save pipeline can capture it. [Why this matters](https://max.dp.tools/posts/12-context-is-a-trap.php)
 3. Enable the **status line** in Claude Code (`/statusline`) to see your current context usage — when context gets high, it's time to save and start a new session.
 

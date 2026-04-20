@@ -1,6 +1,6 @@
 // src/entrypoints/consolidate.ts
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync5, rmSync } from "node:fs";
-import path6 from "node:path";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync6, rmSync } from "node:fs";
+import path7 from "node:path";
 
 // src/helpers/config.ts
 import { existsSync, readFileSync } from "node:fs";
@@ -9,7 +9,9 @@ var DEFAULTS = {
   cooldowns: { saveSeconds: 120, compactSeconds: 3600 },
   thresholds: { minHumanMessages: 3, deltaLinesTrigger: 50 },
   features: { recovery: true },
-  timezone: "UTC"
+  timezone: "UTC",
+  eventHorizonDays: 3,
+  tokenSoftCap: { shortTerm: 800, longTerm: 600 }
 };
 function loadConfig(pluginDir) {
   const file = path.join(pluginDir, "config.json");
@@ -20,7 +22,8 @@ function loadConfig(pluginDir) {
     ...raw,
     cooldowns: { ...DEFAULTS.cooldowns, ...raw.cooldowns ?? {} },
     thresholds: { ...DEFAULTS.thresholds, ...raw.thresholds ?? {} },
-    features: { ...DEFAULTS.features, ...raw.features ?? {} }
+    features: { ...DEFAULTS.features, ...raw.features ?? {} },
+    tokenSoftCap: { ...DEFAULTS.tokenSoftCap, ...raw.tokenSoftCap ?? {} }
   };
 }
 
@@ -310,14 +313,6 @@ import {
   writeFileSync as writeFileSync2
 } from "node:fs";
 import path3 from "node:path";
-function safeRead(filePath) {
-  if (!existsSync4(filePath)) return "";
-  try {
-    return readFileSync3(filePath, "utf8");
-  } catch {
-    return "";
-  }
-}
 function ensureDir(dir) {
   mkdirSync2(dir, { recursive: true });
 }
@@ -342,19 +337,10 @@ function listEpisodes(dataDir, options) {
   entries.sort((a, b) => a.date.localeCompare(b.date));
   return entries;
 }
-function readShortTerm(dataDir) {
-  return safeRead(path3.join(dataDir, "short-term-memory.md"));
-}
-function writeShortTerm(dataDir, content) {
+function writeDerivedMemoryFiles(dataDir, rendered) {
   ensureDir(dataDir);
-  atomicWrite(path3.join(dataDir, "short-term-memory.md"), content);
-}
-function readLongTerm(dataDir) {
-  return safeRead(path3.join(dataDir, "long-term-memory.md"));
-}
-function writeLongTerm(dataDir, content) {
-  ensureDir(dataDir);
-  atomicWrite(path3.join(dataDir, "long-term-memory.md"), content);
+  atomicWrite(path3.join(dataDir, "short-term-memory.md"), rendered.shortTerm);
+  atomicWrite(path3.join(dataDir, "long-term-memory.md"), rendered.longTerm);
 }
 
 // src/helpers/paths.ts
@@ -401,28 +387,286 @@ function loadPrompt(pluginDir, name) {
   }
 }
 function renderPrompt(template, vars) {
-  const result = template.replace(
-    /\{\{([A-Z_]+)\}\}/g,
-    (match, key) => {
-      return vars[key] ?? match;
-    }
-  );
-  const allMatches = [...result.matchAll(/\{\{([A-Z_]+)\}\}/g)];
-  const remaining = [
+  const templateMatches = [...template.matchAll(/\{\{([A-Z_]+)\}\}/g)];
+  const missing = [
     ...new Set(
-      allMatches.map((m) => m[1]).filter((k) => k !== void 0)
+      templateMatches.map((m) => m[1]).filter((k) => k !== void 0 && !(k in vars))
     )
   ];
-  if (remaining.length > 0) {
+  if (missing.length > 0) {
     throw new Error(
-      `Unsubstituted template placeholders: ${remaining.join(", ")}`
+      `Unsubstituted template placeholders: ${missing.join(", ")}`
     );
   }
-  return result;
+  return template.replace(/\{\{([A-Z_]+)\}\}/g, (match, key) => {
+    return vars[key] ?? match;
+  });
+}
+
+// src/helpers/temporal.ts
+import {
+  existsSync as existsSync6,
+  mkdirSync as mkdirSync3,
+  readFileSync as readFileSync5,
+  renameSync as renameSync2,
+  writeFileSync as writeFileSync3
+} from "node:fs";
+import path6 from "node:path";
+var EMPTY_STORE = {
+  version: 1,
+  state: [],
+  events: { recent: [], weekly: [] }
+};
+function isTemporalStore(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value;
+  if (v.version !== 1) return false;
+  if (!Array.isArray(v.state)) return false;
+  if (typeof v.events !== "object" || v.events === null) return false;
+  const events = v.events;
+  if (!Array.isArray(events.recent)) return false;
+  if (!Array.isArray(events.weekly)) return false;
+  return true;
+}
+function readTemporal(dataDir) {
+  const filePath = path6.join(dataDir, "temporal.json");
+  if (!existsSync6(filePath)) return EMPTY_STORE;
+  let raw;
+  try {
+    raw = readFileSync5(filePath, "utf8");
+  } catch {
+    return EMPTY_STORE;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return EMPTY_STORE;
+  }
+  if (typeof parsed === "object" && parsed !== null && "version" in parsed && parsed.version !== 1) {
+    throw new Error(
+      `temporal.json has unsupported version: ${parsed.version}. Migration required.`
+    );
+  }
+  if (!isTemporalStore(parsed)) return EMPTY_STORE;
+  return parsed;
+}
+function writeTemporal(dataDir, store) {
+  mkdirSync3(dataDir, { recursive: true });
+  const filePath = path6.join(dataDir, "temporal.json");
+  const tmp = `${filePath}.tmp`;
+  writeFileSync3(tmp, `${JSON.stringify(store, null, 2)}
+`, "utf8");
+  renameSync2(tmp, filePath);
+}
+function nextId(store, prefix) {
+  const ids = [
+    ...store.state.map((s) => s.id),
+    ...store.events.recent.map((e) => e.id),
+    ...store.events.weekly.map((w) => w.id)
+  ];
+  let max = 0;
+  for (const id of ids) {
+    if (!id.startsWith(prefix)) continue;
+    const n = Number(id.slice(prefix.length));
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return `${prefix}${max + 1}`;
+}
+function normalizeSubject(raw) {
+  return raw.trim().replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+function cloneStore(store) {
+  return {
+    version: 1,
+    state: store.state.map((s) => ({
+      ...s,
+      supersedes: s.supersedes?.slice()
+    })),
+    events: {
+      recent: store.events.recent.map((e) => ({ ...e })),
+      weekly: store.events.weekly.map((w) => ({ ...w }))
+    }
+  };
+}
+function findCurrentFact(state, subject) {
+  return state.find(
+    (s) => s.subject === subject && s.supersededBy === void 0
+  );
+}
+function mergeExtracted(store, today, payload) {
+  const next = cloneStore(store);
+  for (const { subject: rawSubject, value } of payload.newFacts) {
+    const subject = normalizeSubject(rawSubject);
+    if (subject === "") continue;
+    const current = findCurrentFact(next.state, subject);
+    if (current === void 0) {
+      next.state.push({
+        id: nextId(next, "s"),
+        subject,
+        value,
+        validFrom: today
+      });
+      continue;
+    }
+    if (current.value === value) continue;
+    const newFact = {
+      id: nextId(next, "s"),
+      subject,
+      value,
+      validFrom: today,
+      supersedes: [current.id]
+    };
+    current.supersededBy = newFact.id;
+    current.supersededOn = today;
+    next.state.push(newFact);
+  }
+  for (const { date, summary } of payload.newEvents) {
+    const duplicate = next.events.recent.some(
+      (e) => e.date === date && e.summary === summary
+    );
+    if (duplicate) continue;
+    next.events.recent.push({
+      id: nextId(next, "e"),
+      date,
+      summary
+    });
+  }
+  return next;
+}
+function weekOfMonday(date) {
+  const [y, m, d] = date.split("-").map(Number);
+  const dt = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1));
+  const day = dt.getUTCDay();
+  const diff = day === 0 ? 6 : day - 1;
+  dt.setUTCDate(dt.getUTCDate() - diff);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+function daysBetween(from, to) {
+  const [fy, fm, fd] = from.split("-").map(Number);
+  const [ty, tm, td] = to.split("-").map(Number);
+  const a = Date.UTC(fy ?? 1970, (fm ?? 1) - 1, fd ?? 1);
+  const b = Date.UTC(ty ?? 1970, (tm ?? 1) - 1, td ?? 1);
+  return Math.floor((b - a) / 864e5);
+}
+function currentSubjects(store) {
+  const subjects = /* @__PURE__ */ new Set();
+  for (const s of store.state) {
+    if (s.supersededBy === void 0) subjects.add(s.subject);
+  }
+  return [...subjects].sort();
+}
+function renderShortTerm(store) {
+  const current = store.state.filter((s) => s.supersededBy === void 0).sort((a, b) => a.subject.localeCompare(b.subject));
+  const superseded = store.state.filter(
+    (s) => s.supersededOn !== void 0
+  ).sort((a, b) => b.supersededOn.localeCompare(a.supersededOn));
+  const recent = [...store.events.recent].sort(
+    (a, b) => b.date.localeCompare(a.date)
+  );
+  if (current.length === 0 && superseded.length === 0 && recent.length === 0) {
+    return "";
+  }
+  const lines = ["# Short-Term Memory", ""];
+  if (current.length > 0) {
+    lines.push("## State");
+    for (const s of current) {
+      lines.push(`- ${s.subject}: ${s.value}  (since ${s.validFrom})`);
+    }
+    lines.push("");
+  }
+  if (superseded.length > 0) {
+    lines.push("### Previously (superseded \u2014 do not follow)");
+    for (const s of superseded) {
+      lines.push(
+        `- ${s.subject}: ${s.value}  (${s.validFrom} \u2192 ${s.supersededOn})`
+      );
+    }
+    lines.push("");
+  }
+  if (recent.length > 0) {
+    lines.push("## Recent events");
+    for (const e of recent) {
+      lines.push(`- ${e.date}: ${e.summary}`);
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+function renderLongTerm(store) {
+  const weekly = [...store.events.weekly].sort(
+    (a, b) => b.weekOf.localeCompare(a.weekOf)
+  );
+  if (weekly.length === 0) return "";
+  const lines = ["# Long-Term Memory", ""];
+  for (const w of weekly) {
+    lines.push(`## Week of ${w.weekOf}`);
+    lines.push(`- ${w.summary}`);
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+function renderMarkdown(store, _today) {
+  return {
+    shortTerm: renderShortTerm(store),
+    longTerm: renderLongTerm(store)
+  };
+}
+function rollEvents(store, today, horizonDays) {
+  const next = cloneStore(store);
+  const stayRecent = [];
+  const toRoll = [];
+  for (const event of next.events.recent) {
+    const age = daysBetween(event.date, today);
+    if (age <= horizonDays) {
+      stayRecent.push(event);
+    } else {
+      toRoll.push(event);
+    }
+  }
+  if (toRoll.length === 0) {
+    return {
+      ...next,
+      events: { recent: stayRecent, weekly: next.events.weekly }
+    };
+  }
+  const weeklyById = new Map(next.events.weekly.map((w) => [w.weekOf, w]));
+  for (const event of toRoll) {
+    const wk = weekOfMonday(event.date);
+    const existing = weeklyById.get(wk);
+    if (existing !== void 0) {
+      existing.summary = `${existing.summary} \xB7 ${event.date}: ${event.summary}`;
+    } else {
+      const created = {
+        id: nextId(
+          {
+            ...next,
+            events: {
+              recent: [],
+              weekly: [...weeklyById.values()]
+            }
+          },
+          "w"
+        ),
+        weekOf: wk,
+        summary: `${event.date}: ${event.summary}`
+      };
+      weeklyById.set(wk, created);
+    }
+  }
+  const weekly = [...weeklyById.values()].sort(
+    (a, b) => a.weekOf.localeCompare(b.weekOf)
+  );
+  return { ...next, events: { recent: stayRecent, weekly } };
 }
 
 // src/entrypoints/consolidate.ts
-function parseConsolidateResponse(raw) {
+function parseExtractResponse(raw) {
   let text = raw.trim();
   if (text.startsWith("```")) {
     const firstNewline = text.indexOf("\n");
@@ -435,25 +679,38 @@ function parseConsolidateResponse(raw) {
     }
     text = text.trim();
   }
-  const SHORT_MARKER = "===SHORT-TERM===";
-  const LONG_MARKER = "===LONG-TERM===";
-  const shortIdx = text.indexOf(SHORT_MARKER);
-  const longIdx = text.indexOf(LONG_MARKER);
-  if (shortIdx === -1) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
     const snippet = raw.slice(0, 120).replace(/\n/g, "\\n");
-    throw new Error(
-      `Missing ===SHORT-TERM=== marker in response. Got: "${snippet}"`
-    );
+    throw new Error(`Invalid JSON in Haiku response: "${snippet}"`);
   }
-  if (longIdx === -1) {
-    const snippet = raw.slice(0, 120).replace(/\n/g, "\\n");
-    throw new Error(
-      `Missing ===LONG-TERM=== marker in response. Got: "${snippet}"`
-    );
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("Haiku response is not an object");
   }
-  const shortTerm = text.slice(shortIdx + SHORT_MARKER.length, longIdx).trim();
-  const longTerm = text.slice(longIdx + LONG_MARKER.length).trim();
-  return { shortTerm, longTerm };
+  const obj = parsed;
+  if (!Array.isArray(obj.newFacts)) {
+    throw new Error("Missing or non-array newFacts in response");
+  }
+  if (!Array.isArray(obj.newEvents)) {
+    throw new Error("Missing or non-array newEvents in response");
+  }
+  const newFacts = obj.newFacts.map((item, i) => {
+    if (typeof item !== "object" || item === null || typeof item.subject !== "string" || typeof item.value !== "string") {
+      throw new Error(`newFacts[${i}] missing subject or value`);
+    }
+    const rec = item;
+    return { subject: rec.subject, value: rec.value };
+  });
+  const newEvents = obj.newEvents.map((item, i) => {
+    if (typeof item !== "object" || item === null || typeof item.date !== "string" || typeof item.summary !== "string") {
+      throw new Error(`newEvents[${i}] missing date or summary`);
+    }
+    const rec = item;
+    return { date: rec.date, summary: rec.summary };
+  });
+  return { newFacts, newEvents };
 }
 async function main(argv = process.argv.slice(2)) {
   void argv;
@@ -471,8 +728,8 @@ async function main(argv = process.argv.slice(2)) {
     logger.log("consolidate", "no past episodes, skip");
     return 0;
   }
-  const lockPath = path6.join(dataDir, "tmp", "consolidate.lock");
-  mkdirSync3(path6.join(dataDir, "tmp"), { recursive: true });
+  const lockPath = path7.join(dataDir, "tmp", "consolidate.lock");
+  mkdirSync4(path7.join(dataDir, "tmp"), { recursive: true });
   let releaseLock;
   try {
     releaseLock = await acquireLock(lockPath);
@@ -485,20 +742,20 @@ async function main(argv = process.argv.slice(2)) {
     const episodesText = episodes.map(({ date, path: filePath }) => {
       let content = "";
       try {
-        content = readFileSync5(filePath, "utf8");
+        content = readFileSync6(filePath, "utf8");
       } catch {
         content = "";
       }
-      return `=== ${date} ===
+      return `## ${date}
 ${content}`;
     }).join("\n\n");
-    const shortTerm = readShortTerm(dataDir);
-    const longTerm = readLongTerm(dataDir);
+    const store = readTemporal(dataDir);
+    const glossary = currentSubjects(store);
+    const glossaryText = glossary.length > 0 ? glossary.map((s) => `- ${s}`).join("\n") : "(none yet)";
     const template = loadPrompt(pluginDir, "consolidate");
     const rendered = renderPrompt(template, {
       EPISODES: episodesText,
-      SHORT_TERM: shortTerm,
-      LONG_TERM: longTerm
+      SUBJECT_GLOSSARY: glossaryText
     });
     let response;
     try {
@@ -508,16 +765,43 @@ ${content}`;
       logger.log("consolidate", `haiku error: ${msg}`);
       return 1;
     }
-    let parsed;
+    let extracted;
     try {
-      parsed = parseConsolidateResponse(response.text);
+      extracted = parseExtractResponse(response.text);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.log("consolidate", `parse error: ${msg}`);
       return 1;
     }
-    writeShortTerm(dataDir, parsed.shortTerm);
-    writeLongTerm(dataDir, parsed.longTerm);
+    const merged = rollEvents(
+      mergeExtracted(store, today, extracted),
+      today,
+      cfg.eventHorizonDays
+    );
+    try {
+      writeTemporal(dataDir, merged);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.log("consolidate", `writeTemporal failed: ${msg}`);
+      return 1;
+    }
+    const rendered_md = renderMarkdown(merged, today);
+    writeDerivedMemoryFiles(dataDir, rendered_md);
+    const estTokens = (s) => Math.ceil(s.length / 4);
+    const shortTok = estTokens(rendered_md.shortTerm);
+    const longTok = estTokens(rendered_md.longTerm);
+    if (shortTok > cfg.tokenSoftCap.shortTerm) {
+      logger.log(
+        "consolidate",
+        `shortTerm soft cap exceeded: ~${shortTok} > ${cfg.tokenSoftCap.shortTerm} tokens`
+      );
+    }
+    if (longTok > cfg.tokenSoftCap.longTerm) {
+      logger.log(
+        "consolidate",
+        `longTerm soft cap exceeded: ~${longTok} > ${cfg.tokenSoftCap.longTerm} tokens`
+      );
+    }
     for (const { path: filePath } of episodes) {
       rmSync(filePath, { force: true });
     }
@@ -540,5 +824,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 }
 export {
   main,
-  parseConsolidateResponse
+  parseExtractResponse
 };

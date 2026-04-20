@@ -2,8 +2,10 @@ import {
     existsSync,
     mkdirSync,
     mkdtempSync,
+    readdirSync,
     readFileSync,
     rmSync,
+    utimesSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -153,6 +155,35 @@ describe("post-tool-use entrypoint", () => {
 
         expect(code).toBe(0);
         expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+    });
+
+    it("sweeps 0-byte autonomous logs older than 5s; keeps fresh empties and non-empty logs", async () => {
+        const sessionId = "session-sweep-logs";
+        writeFileSync(
+            path.join(sessionsDir, `${sessionId}.jsonl`),
+            makeJsonl(60),
+        );
+
+        const logDir = path.join(dataDir, "logs", "autonomous");
+        const staleEmpty = path.join(logDir, "save-000001.log");
+        const freshEmpty = path.join(logDir, "save-000002.log");
+        const staleNonEmpty = path.join(logDir, "save-000003.log");
+
+        writeFileSync(staleEmpty, "");
+        writeFileSync(freshEmpty, "");
+        writeFileSync(staleNonEmpty, "error trace\n");
+
+        // Backdate the stale ones so they are older than the 5s sweep cutoff
+        const oldTime = new Date(Date.now() - 60_000);
+        utimesSync(staleEmpty, oldTime, oldTime);
+        utimesSync(staleNonEmpty, oldTime, oldTime);
+
+        await main();
+
+        const remaining = readdirSync(logDir);
+        expect(remaining).not.toContain(path.basename(staleEmpty));
+        expect(remaining).toContain(path.basename(freshEmpty));
+        expect(remaining).toContain(path.basename(staleNonEmpty));
     });
 
     it("stale PID file with dead process: spawn IS called; PID file updated", async () => {

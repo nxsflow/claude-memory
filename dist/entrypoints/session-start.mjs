@@ -1,14 +1,14 @@
 // src/entrypoints/session-start.ts
 import { spawn } from "node:child_process";
 import {
-  existsSync as existsSync5,
-  mkdirSync as mkdirSync3,
+  existsSync as existsSync6,
+  mkdirSync as mkdirSync4,
   readdirSync as readdirSync3,
-  readFileSync as readFileSync4,
+  readFileSync as readFileSync5,
   statSync as statSync2,
-  writeFileSync as writeFileSync2
+  writeFileSync as writeFileSync3
 } from "node:fs";
-import path6 from "node:path";
+import path7 from "node:path";
 
 // src/helpers/config.ts
 import { existsSync, readFileSync } from "node:fs";
@@ -17,7 +17,9 @@ var DEFAULTS = {
   cooldowns: { saveSeconds: 120, compactSeconds: 3600 },
   thresholds: { minHumanMessages: 3, deltaLinesTrigger: 50 },
   features: { recovery: true },
-  timezone: "UTC"
+  timezone: "UTC",
+  eventHorizonDays: 3,
+  tokenSoftCap: { shortTerm: 800, longTerm: 600 }
 };
 function loadConfig(pluginDir) {
   const file = path.join(pluginDir, "config.json");
@@ -28,7 +30,8 @@ function loadConfig(pluginDir) {
     ...raw,
     cooldowns: { ...DEFAULTS.cooldowns, ...raw.cooldowns ?? {} },
     thresholds: { ...DEFAULTS.thresholds, ...raw.thresholds ?? {} },
-    features: { ...DEFAULTS.features, ...raw.features ?? {} }
+    features: { ...DEFAULTS.features, ...raw.features ?? {} },
+    tokenSoftCap: { ...DEFAULTS.tokenSoftCap, ...raw.tokenSoftCap ?? {} }
   };
 }
 
@@ -216,17 +219,124 @@ function loadPrompt(pluginDir, name) {
   }
 }
 
+// src/helpers/temporal.ts
+import {
+  existsSync as existsSync5,
+  mkdirSync as mkdirSync3,
+  readFileSync as readFileSync4,
+  renameSync as renameSync2,
+  writeFileSync as writeFileSync2
+} from "node:fs";
+import path6 from "node:path";
+var EMPTY_STORE = {
+  version: 1,
+  state: [],
+  events: { recent: [], weekly: [] }
+};
+function isTemporalStore(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value;
+  if (v.version !== 1) return false;
+  if (!Array.isArray(v.state)) return false;
+  if (typeof v.events !== "object" || v.events === null) return false;
+  const events = v.events;
+  if (!Array.isArray(events.recent)) return false;
+  if (!Array.isArray(events.weekly)) return false;
+  return true;
+}
+function readTemporal(dataDir) {
+  const filePath = path6.join(dataDir, "temporal.json");
+  if (!existsSync5(filePath)) return EMPTY_STORE;
+  let raw;
+  try {
+    raw = readFileSync4(filePath, "utf8");
+  } catch {
+    return EMPTY_STORE;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return EMPTY_STORE;
+  }
+  if (typeof parsed === "object" && parsed !== null && "version" in parsed && parsed.version !== 1) {
+    throw new Error(
+      `temporal.json has unsupported version: ${parsed.version}. Migration required.`
+    );
+  }
+  if (!isTemporalStore(parsed)) return EMPTY_STORE;
+  return parsed;
+}
+function renderShortTerm(store) {
+  const current = store.state.filter((s) => s.supersededBy === void 0).sort((a, b) => a.subject.localeCompare(b.subject));
+  const superseded = store.state.filter(
+    (s) => s.supersededOn !== void 0
+  ).sort((a, b) => b.supersededOn.localeCompare(a.supersededOn));
+  const recent = [...store.events.recent].sort(
+    (a, b) => b.date.localeCompare(a.date)
+  );
+  if (current.length === 0 && superseded.length === 0 && recent.length === 0) {
+    return "";
+  }
+  const lines = ["# Short-Term Memory", ""];
+  if (current.length > 0) {
+    lines.push("## State");
+    for (const s of current) {
+      lines.push(`- ${s.subject}: ${s.value}  (since ${s.validFrom})`);
+    }
+    lines.push("");
+  }
+  if (superseded.length > 0) {
+    lines.push("### Previously (superseded \u2014 do not follow)");
+    for (const s of superseded) {
+      lines.push(
+        `- ${s.subject}: ${s.value}  (${s.validFrom} \u2192 ${s.supersededOn})`
+      );
+    }
+    lines.push("");
+  }
+  if (recent.length > 0) {
+    lines.push("## Recent events");
+    for (const e of recent) {
+      lines.push(`- ${e.date}: ${e.summary}`);
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+function renderLongTerm(store) {
+  const weekly = [...store.events.weekly].sort(
+    (a, b) => b.weekOf.localeCompare(a.weekOf)
+  );
+  if (weekly.length === 0) return "";
+  const lines = ["# Long-Term Memory", ""];
+  for (const w of weekly) {
+    lines.push(`## Week of ${w.weekOf}`);
+    lines.push(`- ${w.summary}`);
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}
+`;
+}
+function renderMarkdown(store, _today) {
+  return {
+    shortTerm: renderShortTerm(store),
+    longTerm: renderLongTerm(store)
+  };
+}
+
 // src/entrypoints/session-start.ts
 function emitFile(filePath) {
-  if (!existsSync5(filePath)) return false;
+  if (!existsSync6(filePath)) return false;
   let content;
   try {
-    content = readFileSync4(filePath, "utf8");
+    content = readFileSync5(filePath, "utf8");
   } catch {
     return false;
   }
   if (!content.trim()) return false;
-  const basename = path6.basename(filePath);
+  const basename = path7.basename(filePath);
   process.stdout.write(`--- ${basename} ---
 `);
   process.stdout.write(content);
@@ -262,8 +372,8 @@ async function main() {
   }
   const logger = createLogger(dataDir, cfg.timezone);
   try {
-    mkdirSync3(path6.join(dataDir, "tmp"), { recursive: true });
-    mkdirSync3(path6.join(dataDir, "logs", "autonomous"), {
+    mkdirSync4(path7.join(dataDir, "tmp"), { recursive: true });
+    mkdirSync4(path7.join(dataDir, "logs", "autonomous"), {
       recursive: true
     });
   } catch (err) {
@@ -271,9 +381,9 @@ async function main() {
     logger.log("session-start", `mkdir failed: ${msg}`);
   }
   try {
-    const gitignorePath = path6.join(dataDir, ".gitignore");
-    if (!existsSync5(gitignorePath)) {
-      writeFileSync2(gitignorePath, "*\n", "utf8");
+    const gitignorePath = path7.join(dataDir, ".gitignore");
+    if (!existsSync6(gitignorePath)) {
+      writeFileSync3(gitignorePath, "*\n", "utf8");
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -282,10 +392,10 @@ async function main() {
   if (cfg.features.recovery) {
     try {
       const sessionsDir = sessionJsonlDir(projectDir);
-      if (existsSync5(sessionsDir)) {
+      if (existsSync6(sessionsDir)) {
         const jsonlFiles = readdirSync3(sessionsDir).filter((f) => f.endsWith(".jsonl")).map((f) => ({
           name: f,
-          mtime: statSync2(path6.join(sessionsDir, f)).mtimeMs
+          mtime: statSync2(path7.join(sessionsDir, f)).mtimeMs
         })).sort((a, b) => b.mtime - a.mtime);
         if (jsonlFiles.length >= 2) {
           const prevFile = jsonlFiles[1];
@@ -296,7 +406,7 @@ async function main() {
             );
             const lastSave = loadLastSave(dataDir);
             if (lastSave?.session !== prevSessionId) {
-              const saveScript = path6.join(
+              const saveScript = path7.join(
                 pluginDir,
                 "dist",
                 "entrypoints",
@@ -340,28 +450,47 @@ async function main() {
     const msg = err instanceof Error ? err.message : String(err);
     logger.log("session-start", `preamble load failed: ${msg}`);
   }
-  const memoryFiles = [
-    path6.join(dataDir, "agent-role.md"),
-    path6.join(dataDir, "core-memories.md"),
-    path6.join(dataDir, "session-handover.md"),
-    path6.join(dataDir, "episodic-memory", `${today}.md`),
-    path6.join(dataDir, "working-memory.md"),
-    path6.join(dataDir, "short-term-memory.md"),
-    path6.join(dataDir, "long-term-memory.md")
+  const alwaysFiles = [
+    path7.join(dataDir, "agent-role.md"),
+    path7.join(dataDir, "core-memories.md"),
+    path7.join(dataDir, "session-handover.md"),
+    path7.join(dataDir, "episodic-memory", `${today}.md`),
+    path7.join(dataDir, "working-memory.md")
   ];
-  const fileResults = memoryFiles.map((filePath) => {
-    if (!existsSync5(filePath)) return { filePath, hasContent: false };
+  const alwaysResults = alwaysFiles.map((filePath) => {
+    if (!existsSync6(filePath)) return { filePath, hasContent: false };
     try {
-      const content = readFileSync4(filePath, "utf8");
+      const content = readFileSync5(filePath, "utf8");
       return { filePath, hasContent: content.trim().length > 0 };
     } catch {
       return { filePath, hasContent: false };
     }
   });
-  const anyContent = fileResults.some((r) => r.hasContent);
+  let temporalShortTerm = "";
+  let temporalLongTerm = "";
+  let usedTemporal = false;
+  try {
+    const store = readTemporal(dataDir);
+    if (store.state.length > 0 || store.events.recent.length > 0 || store.events.weekly.length > 0) {
+      const r = renderMarkdown(store, today);
+      temporalShortTerm = r.shortTerm;
+      temporalLongTerm = r.longTerm;
+      usedTemporal = true;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.log("session-start", `readTemporal failed: ${msg}`);
+  }
+  const legacyShortPath = path7.join(dataDir, "short-term-memory.md");
+  const legacyLongPath = path7.join(dataDir, "long-term-memory.md");
+  const legacyShort = !usedTemporal && existsSync6(legacyShortPath) ? readFileSync5(legacyShortPath, "utf8") : "";
+  const legacyLong = !usedTemporal && existsSync6(legacyLongPath) ? readFileSync5(legacyLongPath, "utf8") : "";
+  const shortTermContent = usedTemporal ? temporalShortTerm : legacyShort;
+  const longTermContent = usedTemporal ? temporalLongTerm : legacyLong;
+  const anyContent = alwaysResults.some((r) => r.hasContent) || shortTermContent.trim().length > 0 || longTermContent.trim().length > 0;
   if (anyContent) {
     process.stdout.write("=== MEMORY ===\n\n");
-    for (const { filePath } of fileResults) {
+    for (const { filePath } of alwaysResults) {
       try {
         emitFile(filePath);
       } catch (err) {
@@ -372,6 +501,53 @@ async function main() {
         );
       }
     }
+    if (shortTermContent.trim().length > 0) {
+      process.stdout.write("--- short-term-memory.md ---\n");
+      process.stdout.write(shortTermContent);
+      if (!shortTermContent.endsWith("\n")) process.stdout.write("\n");
+      process.stdout.write("\n");
+    }
+    if (longTermContent.trim().length > 0) {
+      process.stdout.write("--- long-term-memory.md ---\n");
+      process.stdout.write(longTermContent);
+      if (!longTermContent.endsWith("\n")) process.stdout.write("\n");
+      process.stdout.write("\n");
+    }
+  }
+  try {
+    const agentRolePath = path7.join(dataDir, "agent-role.md");
+    let hasAgentRole = false;
+    if (existsSync6(agentRolePath)) {
+      try {
+        hasAgentRole = readFileSync5(agentRolePath, "utf8").trim().length > 0;
+      } catch {
+        hasAgentRole = false;
+      }
+    }
+    if (!hasAgentRole) {
+      const examplePath = path7.join(pluginDir, "agent-role.example.md");
+      if (existsSync6(examplePath)) {
+        const template = readFileSync5(examplePath, "utf8");
+        process.stdout.write("=== FIRST-RUN BOOTSTRAP ===\n");
+        process.stdout.write(
+          `\`${agentRolePath}\` does not exist yet. Before responding to the user, create it using the template below as the starting structure, tailored from whatever context you already have about this user, this project, and how they work with you (CLAUDE.md, other memory, open files, recent commits).
+
+`
+        );
+        process.stdout.write(
+          "Be honest: when you don't know something, leave that part close to the template wording or drop the section \u2014 do not invent details. The user will refine the file later.\n\n"
+        );
+        process.stdout.write("Template (agent-role.example.md):\n\n");
+        process.stdout.write(template);
+        if (!template.endsWith("\n")) {
+          process.stdout.write("\n");
+        }
+        process.stdout.write("\n");
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.log("session-start", `bootstrap check failed: ${msg}`);
   }
   try {
     consumeHandover(dataDir);
@@ -382,7 +558,7 @@ async function main() {
   try {
     const pastEpisodes = listEpisodes(dataDir, { excludeDate: today });
     if (pastEpisodes.length > 0) {
-      const consolidateScript = path6.join(
+      const consolidateScript = path7.join(
         pluginDir,
         "dist",
         "entrypoints",

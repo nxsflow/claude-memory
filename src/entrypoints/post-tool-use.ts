@@ -6,6 +6,7 @@ import {
     readdirSync,
     readFileSync,
     statSync,
+    unlinkSync,
     writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -134,6 +135,24 @@ export async function main(): Promise<number> {
 
     try {
         mkdirSync(logDir, { recursive: true });
+    } catch {
+        // best-effort
+    }
+
+    // Sweep 0-byte autonomous logs from prior runs — a silent save (skipped
+    // via cooldown, lock, 0-exchanges, etc.) writes nothing to stdout/stderr
+    // and leaves an empty file behind. Only remove files older than 5s so an
+    // in-flight write from a concurrent run is never touched.
+    try {
+        const sweepCutoff = Date.now() - 5_000;
+        for (const name of readdirSync(logDir)) {
+            if (!name.endsWith(".log")) continue;
+            const p = path.join(logDir, name);
+            const st = statSync(p);
+            if (st.size === 0 && st.mtimeMs < sweepCutoff) {
+                unlinkSync(p);
+            }
+        }
     } catch {
         // best-effort
     }

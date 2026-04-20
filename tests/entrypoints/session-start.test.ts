@@ -224,6 +224,66 @@ describe("session-start entrypoint", () => {
         expect(consolidateCall).toBeDefined();
     });
 
+    it("agent-role.md missing but example present: emits first-run bootstrap with template", async () => {
+        writeFileSync(
+            path.join(pluginDir, "agent-role.example.md"),
+            "# Agent Role\n\nI'm the dev partner on this team.\n",
+        );
+
+        const code = await main();
+
+        expect(code).toBe(0);
+
+        const out = getStdout();
+        expect(out).toContain("=== FIRST-RUN BOOTSTRAP ===");
+        expect(out).toContain("agent-role.md");
+        expect(out).toContain("I'm the dev partner on this team.");
+    });
+
+    it("agent-role.md missing and no example template: bootstrap section silently skipped", async () => {
+        const code = await main();
+
+        expect(code).toBe(0);
+
+        const out = getStdout();
+        expect(out).not.toContain("=== FIRST-RUN BOOTSTRAP ===");
+    });
+
+    it("agent-role.md present: bootstrap NOT emitted even when example exists", async () => {
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(
+            path.join(dataDir, "agent-role.md"),
+            "I am the assistant.",
+        );
+        writeFileSync(
+            path.join(pluginDir, "agent-role.example.md"),
+            "# Template\n",
+        );
+
+        const code = await main();
+
+        expect(code).toBe(0);
+
+        const out = getStdout();
+        expect(out).not.toContain("=== FIRST-RUN BOOTSTRAP ===");
+    });
+
+    it("agent-role.md exists but is whitespace-only: bootstrap IS emitted", async () => {
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(path.join(dataDir, "agent-role.md"), "   \n\n  ");
+        writeFileSync(
+            path.join(pluginDir, "agent-role.example.md"),
+            "# Agent Role\n",
+        );
+
+        const code = await main();
+
+        expect(code).toBe(0);
+
+        const out = getStdout();
+        expect(out).toContain("=== FIRST-RUN BOOTSTRAP ===");
+    });
+
     it("no paths resolvable: must not throw; returns 0", async () => {
         delete process.env.CLAUDE_PROJECT_DIR;
         delete process.env.CLAUDE_PLUGIN_ROOT;
@@ -234,5 +294,87 @@ describe("session-start entrypoint", () => {
         }).not.toThrow();
 
         expect(code).toBe(0);
+    });
+});
+
+describe("session-start with temporal.json", () => {
+    it("renders from temporal.json when present (ignores legacy .md)", async () => {
+        // dataDir already created by setupDirs in beforeEach
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(
+            path.join(dataDir, "temporal.json"),
+            JSON.stringify({
+                version: 1,
+                state: [
+                    {
+                        id: "s1",
+                        subject: "pkg-manager",
+                        value: "pnpm",
+                        validFrom: "2026-03-12",
+                        supersededBy: "s2",
+                        supersededOn: "2026-04-01",
+                    },
+                    {
+                        id: "s2",
+                        subject: "pkg-manager",
+                        value: "npm",
+                        validFrom: "2026-04-01",
+                        supersedes: ["s1"],
+                    },
+                ],
+                events: { recent: [], weekly: [] },
+            }),
+            "utf8",
+        );
+
+        // Stale legacy file that should NOT appear
+        writeFileSync(
+            path.join(dataDir, "short-term-memory.md"),
+            "# Short-Term Memory\n\n## 2026-01-01\nstale content",
+            "utf8",
+        );
+
+        await main();
+        const stdout = stdoutChunks.join("");
+        expect(stdout).toContain("pkg-manager: npm");
+        expect(stdout).toContain("Previously (superseded — do not follow)");
+        expect(stdout).not.toContain("stale content");
+    });
+
+    it("falls back to legacy .md files when temporal.json is absent", async () => {
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(
+            path.join(dataDir, "short-term-memory.md"),
+            "# Short-Term Memory\n\n## 2026-01-01\nlegacy content",
+            "utf8",
+        );
+
+        await main();
+        const stdout = stdoutChunks.join("");
+        expect(stdout).toContain("legacy content");
+    });
+
+    it("falls back to legacy .md when temporal.json has an unsupported version", async () => {
+        mkdirSync(dataDir, { recursive: true });
+        // readTemporal throws on version mismatch; session-start must catch
+        // and fall through to the legacy emit path.
+        writeFileSync(
+            path.join(dataDir, "temporal.json"),
+            JSON.stringify({
+                version: 99,
+                state: [],
+                events: { recent: [], weekly: [] },
+            }),
+            "utf8",
+        );
+        writeFileSync(
+            path.join(dataDir, "short-term-memory.md"),
+            "# Short-Term Memory\n\n## 2026-01-01\nfallback content",
+            "utf8",
+        );
+
+        await main();
+        const stdout = stdoutChunks.join("");
+        expect(stdout).toContain("fallback content");
     });
 });

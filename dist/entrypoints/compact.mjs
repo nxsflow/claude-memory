@@ -9,7 +9,9 @@ var DEFAULTS = {
   cooldowns: { saveSeconds: 120, compactSeconds: 3600 },
   thresholds: { minHumanMessages: 3, deltaLinesTrigger: 50 },
   features: { recovery: true },
-  timezone: "UTC"
+  timezone: "UTC",
+  eventHorizonDays: 3,
+  tokenSoftCap: { shortTerm: 800, longTerm: 600 }
 };
 function loadConfig(pluginDir) {
   const file = path.join(pluginDir, "config.json");
@@ -20,7 +22,8 @@ function loadConfig(pluginDir) {
     ...raw,
     cooldowns: { ...DEFAULTS.cooldowns, ...raw.cooldowns ?? {} },
     thresholds: { ...DEFAULTS.thresholds, ...raw.thresholds ?? {} },
-    features: { ...DEFAULTS.features, ...raw.features ?? {} }
+    features: { ...DEFAULTS.features, ...raw.features ?? {} },
+    tokenSoftCap: { ...DEFAULTS.tokenSoftCap, ...raw.tokenSoftCap ?? {} }
   };
 }
 
@@ -386,24 +389,20 @@ function loadPrompt(pluginDir, name) {
   }
 }
 function renderPrompt(template, vars) {
-  const result = template.replace(
-    /\{\{([A-Z_]+)\}\}/g,
-    (match, key) => {
-      return vars[key] ?? match;
-    }
-  );
-  const allMatches = [...result.matchAll(/\{\{([A-Z_]+)\}\}/g)];
-  const remaining = [
+  const templateMatches = [...template.matchAll(/\{\{([A-Z_]+)\}\}/g)];
+  const missing = [
     ...new Set(
-      allMatches.map((m) => m[1]).filter((k) => k !== void 0)
+      templateMatches.map((m) => m[1]).filter((k) => k !== void 0 && !(k in vars))
     )
   ];
-  if (remaining.length > 0) {
+  if (missing.length > 0) {
     throw new Error(
-      `Unsubstituted template placeholders: ${remaining.join(", ")}`
+      `Unsubstituted template placeholders: ${missing.join(", ")}`
     );
   }
-  return result;
+  return template.replace(/\{\{([A-Z_]+)\}\}/g, (match, key) => {
+    return vars[key] ?? match;
+  });
 }
 
 // src/entrypoints/compact.ts

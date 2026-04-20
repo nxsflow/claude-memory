@@ -7,6 +7,8 @@ const DEFAULTS: Config = {
     thresholds: { minHumanMessages: 3, deltaLinesTrigger: 50 },
     features: { recovery: true },
     timezone: "UTC",
+    eventHorizonDays: 3,
+    tokenSoftCap: { shortTerm: 800, longTerm: 600 },
 };
 
 export function loadConfig(pluginDir: string): Config {
@@ -16,6 +18,7 @@ export function loadConfig(pluginDir: string): Config {
         cooldowns?: Partial<Config["cooldowns"]>;
         thresholds?: Partial<Config["thresholds"]>;
         features?: Partial<Config["features"]>;
+        tokenSoftCap?: Partial<Config["tokenSoftCap"]>;
     };
     return {
         ...DEFAULTS,
@@ -23,5 +26,6 @@ export function loadConfig(pluginDir: string): Config {
         cooldowns: { ...DEFAULTS.cooldowns, ...(raw.cooldowns ?? {}) },
         thresholds: { ...DEFAULTS.thresholds, ...(raw.thresholds ?? {}) },
         features: { ...DEFAULTS.features, ...(raw.features ?? {}) },
+        tokenSoftCap: { ...DEFAULTS.tokenSoftCap, ...(raw.tokenSoftCap ?? {}) },
     };
 }

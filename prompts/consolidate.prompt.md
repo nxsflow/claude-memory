@@ -1,73 +1,55 @@
-You are consolidating the agent's memory. Your job is mechanical compression — no creativity, no opinions, no new content.
+You extract structured facts from engineering episodes. You do NOT edit, summarise, or reflow existing memory. You produce strict JSON.
 
 ## Input
 
-All file contents are provided below. You have NO file access — work only with what's given.
-
-### Episodic memory (past-day records to consolidate)
+### Episodes (paragraphs to extract from)
 
 {{EPISODES}}
 
-### Current short-term memory
+### Known state subjects (reuse these when applicable)
 
-{{SHORT_TERM}}
+{{SUBJECT_GLOSSARY}}
 
-### Current long-term memory
+## What is a state fact vs an event
 
-{{LONG_TERM}}
+**STATE FACT** — a durable fact about HOW the project IS configured or WHAT convention applies. Examples:
 
-## What to do
+- "package manager is npm"
+- "test runner is vitest"
+- "CI runs on GitHub Actions"
+- "indent style is 4-space"
 
-### Step 1: Compact each episode into short-term memory
+State facts have a SUBJECT (kebab-case) and a VALUE. If the subject already appears in the glossary, REUSE the exact key. Only invent a new subject when no existing one fits.
 
-For EACH episodic-memory file, compress the full day into ONE entry:
+**EVENT** — a thing that HAPPENED on a specific day. Examples:
 
-- Header: `## YYYY-MM-DD`
-- Body: 2–4 sentences covering: deliverables, key decisions, state changes
-- Drop: conversation flow, intermediate steps, file paths, context percentages
+- "fixed pagination off-by-one"
+- "migrated pnpm→npm" (this is an event even though it IS ALSO evidence of a state change — the state change gets captured separately as a state fact)
 
-Append the new day entries to the existing short-term memory content.
-
-### Step 2: Rotate aged short-term entries into long-term memory
-
-Any entry in short-term memory older than 3 days gets consolidated into long-term memory:
-
-- Group by week (Monday–Sunday)
-- Header: `## Week of YYYY-MM-DD`
-- Body: 3–5 sentences per week covering: conventions, patterns, infrastructure changes, major deliverables
-- Drop: individual file changes, daily details
-
-Remove the rotated entries from short-term memory.
-
-### Step 3: Core-memory candidates
-
-If you notice a moment that seems identity-defining, add it at the END of the short-term section:
-
-```
-## Core-Memory Candidates
-- CORE-MEMORY CANDIDATE: [one-line description]
-```
-
-## Output format
-
-Return EXACTLY this structure — no other text, no explanations:
-
-```
-===SHORT-TERM===
-# Short-Term Memory
-
-[short-term-memory.md content here]
-
-===LONG-TERM===
-# Long-Term Memory
-
-[long-term-memory.md content here]
-```
+Events have a DATE (YYYY-MM-DD from the episode's `## YYYY-MM-DD` header) and a SUMMARY (≤ 20 words).
 
 ## Rules
 
-- NEVER add content that wasn't in the source — you compress, you don't create
-- Keep short-term section under 600 tokens total
-- Keep long-term section under 400 tokens total
-- Preserve the `# Short-Term Memory` and `# Long-Term Memory` headers
-- Apply non-destructive compression: shortest form preserving meaning. Common: conf, MR, perm, infra, docs, impl, dev, env, app, repo, auth.
+1. Prefer reusing subject keys from the glossary. Only invent a new subject when no existing one fits.
+2. A single episode can produce zero or many state facts and zero or many events.
+3. Ignore iteration / debugging noise that is not a deliverable.
+4. Do NOT emit supersession markers or IDs — that is code's job, not yours.
+5. Values are ≤ 60 chars. Summaries are ≤ 20 words.
+6. Emit state facts about DURABLE configuration, not about today's events. "Migrated to npm" is an event; "npm (migrated from pnpm)" is the new state fact's value.
+
+## Output
+
+Return EXACTLY this JSON and nothing else. No prose before or after. A single ` ```json ` code fence is acceptable.
+
+```json
+{
+    "newFacts": [
+        { "subject": "kebab-case", "value": "short string" }
+    ],
+    "newEvents": [
+        { "date": "YYYY-MM-DD", "summary": "short string" }
+    ]
+}
+```
+
+Both arrays may be empty. Keys `newFacts` and `newEvents` MUST always be present.
