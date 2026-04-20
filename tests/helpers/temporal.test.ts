@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
     EMPTY_STORE,
+    mergeExtracted,
     nextId,
+    normalizeSubject,
     readTemporal,
     writeTemporal,
 } from "../../src/helpers/temporal.ts";
@@ -132,5 +134,180 @@ describe("nextId", () => {
             ],
         };
         expect(nextId(store, "e")).toBe("e1");
+    });
+});
+
+describe("normalizeSubject", () => {
+    it("lowercases + kebab-cases camelCase", () => {
+        expect(normalizeSubject("pkgManager")).toBe("pkg-manager");
+    });
+
+    it("replaces whitespace/underscores with hyphens", () => {
+        expect(normalizeSubject("test_runner name")).toBe("test-runner-name");
+    });
+
+    it("collapses repeated separators and trims", () => {
+        expect(normalizeSubject("  --Foo__bar--  ")).toBe("foo-bar");
+    });
+});
+
+describe("mergeExtracted: state facts", () => {
+    it("inserts a new fact into an empty store", () => {
+        const store = EMPTY_STORE;
+        const result = mergeExtracted(store, "2026-04-20", {
+            newFacts: [{ subject: "pkg-manager", value: "pnpm" }],
+            newEvents: [],
+        });
+        expect(result.state).toEqual([
+            {
+                id: "s1",
+                subject: "pkg-manager",
+                value: "pnpm",
+                validFrom: "2026-04-20",
+            },
+        ]);
+    });
+
+    it("normalizes subject keys before comparing", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            state: [
+                {
+                    id: "s1",
+                    subject: "pkg-manager",
+                    value: "pnpm",
+                    validFrom: "2026-03-12",
+                },
+            ],
+        };
+        const result = mergeExtracted(store, "2026-04-20", {
+            newFacts: [{ subject: "pkgManager", value: "pnpm" }],
+            newEvents: [],
+        });
+        expect(result.state.length).toBe(1);
+    });
+
+    it("is a no-op when value is unchanged", () => {
+        const existing: TemporalStore = {
+            ...EMPTY_STORE,
+            state: [
+                {
+                    id: "s1",
+                    subject: "pkg-manager",
+                    value: "pnpm",
+                    validFrom: "2026-03-12",
+                },
+            ],
+        };
+        const result = mergeExtracted(existing, "2026-04-20", {
+            newFacts: [{ subject: "pkg-manager", value: "pnpm" }],
+            newEvents: [],
+        });
+        expect(result.state).toEqual(existing.state);
+    });
+
+    it("marks supersession when value changes", () => {
+        const existing: TemporalStore = {
+            ...EMPTY_STORE,
+            state: [
+                {
+                    id: "s1",
+                    subject: "pkg-manager",
+                    value: "pnpm",
+                    validFrom: "2026-03-12",
+                },
+            ],
+        };
+        const result = mergeExtracted(existing, "2026-04-01", {
+            newFacts: [
+                { subject: "pkg-manager", value: "npm (migrated from pnpm)" },
+            ],
+            newEvents: [],
+        });
+        expect(result.state).toEqual([
+            {
+                id: "s1",
+                subject: "pkg-manager",
+                value: "pnpm",
+                validFrom: "2026-03-12",
+                supersededBy: "s2",
+                supersededOn: "2026-04-01",
+            },
+            {
+                id: "s2",
+                subject: "pkg-manager",
+                value: "npm (migrated from pnpm)",
+                validFrom: "2026-04-01",
+                supersedes: ["s1"],
+            },
+        ]);
+    });
+
+    it("ignores already-superseded facts when finding current value", () => {
+        const existing: TemporalStore = {
+            ...EMPTY_STORE,
+            state: [
+                {
+                    id: "s1",
+                    subject: "pkg-manager",
+                    value: "yarn",
+                    validFrom: "2026-01-01",
+                    supersededBy: "s2",
+                    supersededOn: "2026-03-12",
+                },
+                {
+                    id: "s2",
+                    subject: "pkg-manager",
+                    value: "pnpm",
+                    validFrom: "2026-03-12",
+                    supersedes: ["s1"],
+                },
+            ],
+        };
+        const result = mergeExtracted(existing, "2026-04-01", {
+            newFacts: [{ subject: "pkg-manager", value: "npm" }],
+            newEvents: [],
+        });
+        const s1 = result.state.find((s) => s.id === "s1");
+        const s2 = result.state.find((s) => s.id === "s2");
+        const s3 = result.state.find((s) => s.id === "s3");
+        expect(s1?.supersededBy).toBe("s2");
+        expect(s2?.supersededBy).toBe("s3");
+        expect(s2?.supersededOn).toBe("2026-04-01");
+        expect(s3?.value).toBe("npm");
+        expect(s3?.supersedes).toEqual(["s2"]);
+    });
+
+    it("processes multiple new facts atomically (ids do not collide)", () => {
+        const result = mergeExtracted(EMPTY_STORE, "2026-04-20", {
+            newFacts: [
+                { subject: "pkg-manager", value: "npm" },
+                { subject: "test-runner", value: "vitest" },
+            ],
+            newEvents: [],
+        });
+        const ids = result.state.map((s) => s.id);
+        expect(new Set(ids).size).toBe(ids.length);
+        expect(ids).toEqual(["s1", "s2"]);
+    });
+
+    it("does not mutate the input store", () => {
+        const existing: TemporalStore = {
+            ...EMPTY_STORE,
+            state: [
+                {
+                    id: "s1",
+                    subject: "pkg-manager",
+                    value: "pnpm",
+                    validFrom: "2026-03-12",
+                },
+            ],
+        };
+        const snapshot = structuredClone(existing);
+        mergeExtracted(existing, "2026-04-01", {
+            newFacts: [{ subject: "pkg-manager", value: "npm" }],
+            newEvents: [],
+        });
+        expect(existing).toEqual(snapshot);
     });
 });

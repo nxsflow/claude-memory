@@ -6,7 +6,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import type { TemporalStore } from "./types.ts";
+import type { ExtractedPayload, StateFact, TemporalStore } from "./types.ts";
 
 export const EMPTY_STORE: TemporalStore = {
     version: 1,
@@ -88,4 +88,78 @@ export function nextId(store: TemporalStore, prefix: "s" | "e" | "w"): string {
         if (Number.isFinite(n) && n > max) max = n;
     }
     return `${prefix}${max + 1}`;
+}
+
+export function normalizeSubject(raw: string): string {
+    return raw
+        .trim()
+        .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+}
+
+function cloneStore(store: TemporalStore): TemporalStore {
+    return {
+        version: 1,
+        state: store.state.map((s) => ({
+            ...s,
+            supersedes: s.supersedes?.slice(),
+        })),
+        events: {
+            recent: store.events.recent.map((e) => ({ ...e })),
+            weekly: store.events.weekly.map((w) => ({ ...w })),
+        },
+    };
+}
+
+function findCurrentFact(
+    state: StateFact[],
+    subject: string,
+): StateFact | undefined {
+    return state.find(
+        (s) => s.subject === subject && s.supersededBy === undefined,
+    );
+}
+
+export function mergeExtracted(
+    store: TemporalStore,
+    today: string,
+    payload: ExtractedPayload,
+): TemporalStore {
+    const next = cloneStore(store);
+
+    for (const { subject: rawSubject, value } of payload.newFacts) {
+        const subject = normalizeSubject(rawSubject);
+        if (subject === "") continue;
+
+        const current = findCurrentFact(next.state, subject);
+
+        if (current === undefined) {
+            next.state.push({
+                id: nextId(next, "s"),
+                subject,
+                value,
+                validFrom: today,
+            });
+            continue;
+        }
+
+        if (current.value === value) continue;
+
+        const newFact: StateFact = {
+            id: nextId(next, "s"),
+            subject,
+            value,
+            validFrom: today,
+            supersedes: [current.id],
+        };
+        current.supersededBy = newFact.id;
+        current.supersededOn = today;
+        next.state.push(newFact);
+    }
+
+    // Event branch is implemented in Task 4.
+
+    return next;
 }
