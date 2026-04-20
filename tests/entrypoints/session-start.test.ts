@@ -296,3 +296,61 @@ describe("session-start entrypoint", () => {
         expect(code).toBe(0);
     });
 });
+
+describe("session-start with temporal.json", () => {
+    it("renders from temporal.json when present (ignores legacy .md)", async () => {
+        // dataDir already created by setupDirs in beforeEach
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(
+            path.join(dataDir, "temporal.json"),
+            JSON.stringify({
+                version: 1,
+                state: [
+                    {
+                        id: "s1",
+                        subject: "pkg-manager",
+                        value: "pnpm",
+                        validFrom: "2026-03-12",
+                        supersededBy: "s2",
+                        supersededOn: "2026-04-01",
+                    },
+                    {
+                        id: "s2",
+                        subject: "pkg-manager",
+                        value: "npm",
+                        validFrom: "2026-04-01",
+                        supersedes: ["s1"],
+                    },
+                ],
+                events: { recent: [], weekly: [] },
+            }),
+            "utf8",
+        );
+
+        // Stale legacy file that should NOT appear
+        writeFileSync(
+            path.join(dataDir, "short-term-memory.md"),
+            "# Short-Term Memory\n\n## 2026-01-01\nstale content",
+            "utf8",
+        );
+
+        await main();
+        const stdout = stdoutChunks.join("");
+        expect(stdout).toContain("pkg-manager: npm");
+        expect(stdout).toContain("Previously (superseded — do not follow)");
+        expect(stdout).not.toContain("stale content");
+    });
+
+    it("falls back to legacy .md files when temporal.json is absent", async () => {
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(
+            path.join(dataDir, "short-term-memory.md"),
+            "# Short-Term Memory\n\n## 2026-01-01\nlegacy content",
+            "utf8",
+        );
+
+        await main();
+        const stdout = stdoutChunks.join("");
+        expect(stdout).toContain("legacy content");
+    });
+});

@@ -17,6 +17,7 @@ import {
 } from "../helpers/memory-files.ts";
 import { resolvePaths, sessionJsonlDir } from "../helpers/paths.ts";
 import { loadPrompt } from "../helpers/prompts.ts";
+import { readTemporal, renderMarkdown } from "../helpers/temporal.ts";
 
 // ---------------------------------------------------------------------------
 // Internal helper — emit a file section to stdout if present and non-empty.
@@ -171,33 +172,68 @@ export async function main(): Promise<number> {
     }
 
     // 6. Emit memory sections wrapped in "=== MEMORY ==="
-    const memoryFiles = [
+    const alwaysFiles = [
         path.join(dataDir, "agent-role.md"),
         path.join(dataDir, "core-memories.md"),
         path.join(dataDir, "session-handover.md"),
         path.join(dataDir, "episodic-memory", `${today}.md`),
         path.join(dataDir, "working-memory.md"),
-        path.join(dataDir, "short-term-memory.md"),
-        path.join(dataDir, "long-term-memory.md"),
     ];
 
-    // Collect which files have content
-    const fileResults: { filePath: string; hasContent: boolean }[] =
-        memoryFiles.map((filePath) => {
-            if (!existsSync(filePath)) return { filePath, hasContent: false };
-            try {
-                const content = readFileSync(filePath, "utf8");
-                return { filePath, hasContent: content.trim().length > 0 };
-            } catch {
-                return { filePath, hasContent: false };
-            }
-        });
+    const alwaysResults = alwaysFiles.map((filePath) => {
+        if (!existsSync(filePath)) return { filePath, hasContent: false };
+        try {
+            const content = readFileSync(filePath, "utf8");
+            return { filePath, hasContent: content.trim().length > 0 };
+        } catch {
+            return { filePath, hasContent: false };
+        }
+    });
 
-    const anyContent = fileResults.some((r) => r.hasContent);
+    // Prefer temporal.json; fall back to legacy short/long-term .md files.
+    let temporalShortTerm = "";
+    let temporalLongTerm = "";
+    let usedTemporal = false;
+    try {
+        const store = readTemporal(dataDir);
+        if (
+            store.state.length > 0 ||
+            store.events.recent.length > 0 ||
+            store.events.weekly.length > 0
+        ) {
+            const r = renderMarkdown(store, today);
+            temporalShortTerm = r.shortTerm;
+            temporalLongTerm = r.longTerm;
+            usedTemporal = true;
+        }
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.log("session-start", `readTemporal failed: ${msg}`);
+    }
+
+    const legacyShortPath = path.join(dataDir, "short-term-memory.md");
+    const legacyLongPath = path.join(dataDir, "long-term-memory.md");
+
+    const legacyShort =
+        !usedTemporal && existsSync(legacyShortPath)
+            ? readFileSync(legacyShortPath, "utf8")
+            : "";
+    const legacyLong =
+        !usedTemporal && existsSync(legacyLongPath)
+            ? readFileSync(legacyLongPath, "utf8")
+            : "";
+
+    const shortTermContent = usedTemporal ? temporalShortTerm : legacyShort;
+    const longTermContent = usedTemporal ? temporalLongTerm : legacyLong;
+
+    const anyContent =
+        alwaysResults.some((r) => r.hasContent) ||
+        shortTermContent.trim().length > 0 ||
+        longTermContent.trim().length > 0;
 
     if (anyContent) {
         process.stdout.write("=== MEMORY ===\n\n");
-        for (const { filePath } of fileResults) {
+        for (const { filePath } of alwaysResults) {
             try {
                 emitFile(filePath);
             } catch (err: unknown) {
@@ -207,6 +243,18 @@ export async function main(): Promise<number> {
                     `emitFile failed for ${filePath}: ${msg}`,
                 );
             }
+        }
+        if (shortTermContent.trim().length > 0) {
+            process.stdout.write("--- short-term-memory.md ---\n");
+            process.stdout.write(shortTermContent);
+            if (!shortTermContent.endsWith("\n")) process.stdout.write("\n");
+            process.stdout.write("\n");
+        }
+        if (longTermContent.trim().length > 0) {
+            process.stdout.write("--- long-term-memory.md ---\n");
+            process.stdout.write(longTermContent);
+            if (!longTermContent.endsWith("\n")) process.stdout.write("\n");
+            process.stdout.write("\n");
         }
     }
 
