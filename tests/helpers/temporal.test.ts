@@ -311,3 +311,49 @@ describe("mergeExtracted: state facts", () => {
         expect(existing).toEqual(snapshot);
     });
 });
+
+describe("mergeExtracted: events", () => {
+    it("appends a new event to recent", () => {
+        const result = mergeExtracted(EMPTY_STORE, "2026-04-20", {
+            newFacts: [],
+            newEvents: [{ date: "2026-04-20", summary: "hello" }],
+        });
+        expect(result.events.recent).toEqual([
+            { id: "e1", date: "2026-04-20", summary: "hello" },
+        ]);
+    });
+
+    it("assigns monotonic event ids", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            events: {
+                recent: [{ id: "e4", date: "2026-04-18", summary: "old" }],
+                weekly: [],
+            },
+        };
+        const result = mergeExtracted(store, "2026-04-20", {
+            newFacts: [],
+            newEvents: [
+                { date: "2026-04-20", summary: "a" },
+                { date: "2026-04-20", summary: "b" },
+            ],
+        });
+        const ids = result.events.recent.map((e) => e.id);
+        expect(ids).toEqual(["e4", "e5", "e6"]);
+    });
+
+    it("does not duplicate an identical event (same date + summary)", () => {
+        const store: TemporalStore = {
+            ...EMPTY_STORE,
+            events: {
+                recent: [{ id: "e1", date: "2026-04-20", summary: "hello" }],
+                weekly: [],
+            },
+        };
+        const result = mergeExtracted(store, "2026-04-20", {
+            newFacts: [],
+            newEvents: [{ date: "2026-04-20", summary: "hello" }],
+        });
+        expect(result.events.recent).toEqual(store.events.recent);
+    });
+});

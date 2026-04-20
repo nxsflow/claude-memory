@@ -159,7 +159,18 @@ export function mergeExtracted(
         next.state.push(newFact);
     }
 
-    // Event branch is implemented in Task 4.
+    for (const { date, summary } of payload.newEvents) {
+        const duplicate = next.events.recent.some(
+            (e) => e.date === date && e.summary === summary,
+        );
+        if (duplicate) continue;
+
+        next.events.recent.push({
+            id: nextId(next, "e"),
+            date,
+            summary,
+        });
+    }
 
     return next;
 }
