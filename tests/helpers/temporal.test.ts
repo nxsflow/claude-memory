@@ -314,6 +314,16 @@ describe("mergeExtracted: state facts", () => {
         });
         expect(existing).toEqual(snapshot);
     });
+
+    it("skips facts whose subject normalizes to empty string", () => {
+        // "---" normalizes to "" (only hyphens, trimmed) — the fact must
+        // be dropped silently rather than inserted with an empty subject.
+        const result = mergeExtracted(EMPTY_STORE, "2026-04-20", {
+            newFacts: [{ subject: "---", value: "should be skipped" }],
+            newEvents: [],
+        });
+        expect(result.state).toEqual([]);
+    });
 });
 
 describe("mergeExtracted: events", () => {

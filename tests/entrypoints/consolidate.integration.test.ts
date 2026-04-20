@@ -182,4 +182,66 @@ describe("consolidate integration", () => {
         expect(exit).toBe(0);
         expect(existsSync(path.join(dataDir, "temporal.json"))).toBe(true);
     });
+
+    it("preserves episodes when callHaiku rejects (subprocess error)", async () => {
+        writeEpisode("2026-04-18", "something happened");
+        mockCallHaiku.mockRejectedValueOnce(new Error("subprocess died"));
+
+        const exit = await main();
+        expect(exit).toBe(1);
+
+        // Episode must survive: consolidate only deletes episodes after
+        // temporal.json is successfully written.
+        expect(
+            existsSync(path.join(dataDir, "episodic-memory", "2026-04-18.md")),
+        ).toBe(true);
+        expect(existsSync(path.join(dataDir, "temporal.json"))).toBe(false);
+    });
+
+    it("logs a warning when rendered memory exceeds the soft caps", async () => {
+        // Shrink soft caps to 1 token so any non-empty render trips the
+        // warning without needing a huge fixture. Seed both a current state
+        // fact AND an existing weekly rollup so both branches fire.
+        writeFileSync(
+            path.join(pluginDir, "config.json"),
+            JSON.stringify({
+                timezone: "UTC",
+                tokenSoftCap: { shortTerm: 1, longTerm: 1 },
+            }),
+            "utf8",
+        );
+        writeTemporal({
+            version: 1,
+            state: [],
+            events: {
+                recent: [],
+                weekly: [
+                    {
+                        id: "w1",
+                        weekOf: "2026-03-09",
+                        summary: "Set up vitest harness",
+                    },
+                ],
+            },
+        });
+        writeEpisode("2026-04-18", "Set up vitest");
+        mockCallHaiku.mockResolvedValueOnce(
+            haikuResp({
+                newFacts: [{ subject: "test-runner", value: "vitest" }],
+                newEvents: [{ date: "2026-04-18", summary: "vitest harness" }],
+            }),
+        );
+
+        const exit = await main();
+        expect(exit).toBe(0);
+
+        const logPath = path.join(
+            dataDir,
+            "logs",
+            `memory-${new Date().toISOString().slice(0, 10)}.log`,
+        );
+        const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+        expect(log).toContain("shortTerm soft cap exceeded");
+        expect(log).toContain("longTerm soft cap exceeded");
+    });
 });

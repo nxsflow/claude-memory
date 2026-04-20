@@ -353,4 +353,28 @@ describe("session-start with temporal.json", () => {
         const stdout = stdoutChunks.join("");
         expect(stdout).toContain("legacy content");
     });
+
+    it("falls back to legacy .md when temporal.json has an unsupported version", async () => {
+        mkdirSync(dataDir, { recursive: true });
+        // readTemporal throws on version mismatch; session-start must catch
+        // and fall through to the legacy emit path.
+        writeFileSync(
+            path.join(dataDir, "temporal.json"),
+            JSON.stringify({
+                version: 99,
+                state: [],
+                events: { recent: [], weekly: [] },
+            }),
+            "utf8",
+        );
+        writeFileSync(
+            path.join(dataDir, "short-term-memory.md"),
+            "# Short-Term Memory\n\n## 2026-01-01\nfallback content",
+            "utf8",
+        );
+
+        await main();
+        const stdout = stdoutChunks.join("");
+        expect(stdout).toContain("fallback content");
+    });
 });
