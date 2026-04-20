@@ -26,6 +26,12 @@ function isTemporalStore(value: unknown): value is TemporalStore {
     return true;
 }
 
+// readTemporal uses silent-empty-store semantics on malformed JSON by design:
+// the spec (docs/superpowers/specs/2026-04-20-temporal-memory-design.md)
+// authorizes consolidate to recover by overwriting on the next run. Version
+// mismatch, however, is fatal — it signals a migration that the caller must
+// handle. Missing file also returns EMPTY_STORE because a fresh install has
+// no state yet.
 export function readTemporal(dataDir: string): TemporalStore {
     const filePath = path.join(dataDir, "temporal.json");
     if (!existsSync(filePath)) return EMPTY_STORE;
